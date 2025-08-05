@@ -24,12 +24,17 @@ def MultiViewWithPortal(args, host, portal_host):
     memo_filtered = create_memo()
 
     def header_text():
+        # return f"{args['title']} – {state['active']} (t{state['parent_tick']})"
+        # return f"{args['title']}"
         return memo_header(
             lambda: f"{args['title']} – {state['active']} (t{state['parent_tick']})",
             [args["title"], state["active"], state["parent_tick"]],
         )
 
     def get_filtered():
+        # return [
+        #         x for x in lst["items"] if lst["filter"].lower() in x.lower()
+        #     ]
         return memo_filtered(
             lambda: [
                 x for x in lst["items"] if lst["filter"].lower() in x.lower()
@@ -101,7 +106,7 @@ def MultiViewWithPortal(args, host, portal_host):
         )
 
     def list_view():
-        mk = memo_key_from(["list", lst["filter"], len(lst["items"])])
+        mk = memo_key_from(["list", lst["filter"], len(lst["items"]), counter["count"]])
         filtered = get_filtered()
         return h(
             "div",
@@ -128,8 +133,10 @@ def MultiViewWithPortal(args, host, portal_host):
             f"Count: {counter['count']} | "
             f"Items: {len(lst['items'])}"
         )
+        print(text)
         span = h("span", {"text": text})
-        return Portal(portal_host, h("div", {"class": "status"}, [span]), key="status")
+        # return Portal(portal_host, h("div", {"class": "status"}, [span]), key="status")
+        return Portal(portal_host, h("div", {"class": "status"}, [span]), key=text)
 
     def root_view():
         return h(
@@ -141,14 +148,14 @@ def MultiViewWithPortal(args, host, portal_host):
                 (counter_view() if state["active"] == "counter" else list_view()),
                 status_bar(),
             ],
-            memo_key=memo_key_from([args["title"], state["active"]]),
+            memo_key=memo_key_from([args["title"], state["active"], state["parent_tick"], counter["count"], len(lst["items"]), lst["filter"]]),
         )
 
     update, unmount = mount_vdom(host, root_view)
     scheduler = Scheduler(update, host.winfo_toplevel())
 
     def request_render():
-        print("late bind")
+        # print("late bind")
         scheduler.request()
 
     try:

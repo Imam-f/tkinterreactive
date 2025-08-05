@@ -104,11 +104,13 @@ def create_element(vnode, parent):
     return w
 
 def same_node(a, b):
-    if type(a) != type(b):
+    if type(a) is not type(b):
+    # if type(a) is type(b):
         return False
     if isinstance(a, str):
         return True
     if isinstance(a, PortalVNode):
+        print("same portal", a.key, b.key)
         return a.key is not None and a.key == b.key
     if a.key is not None or b.key is not None:
         return a.key == b.key and a.tag == b.tag
@@ -129,7 +131,6 @@ def _mount_portal(vnode):
         # Always patch into the portal host (valid widget)
         rec["vnode"] = patch(host, rec["vnode"], vnode.child)
         MOUNTED[host] = rec
-
 
 def patch(parent, old_v, new_v, index=0):
     # Parent may be missing (e.g., previously destroyed); bail out safely.
@@ -199,9 +200,40 @@ def patch(parent, old_v, new_v, index=0):
             widget.insert(tk.END, text)
         return new_v
 
-    # Diff children
+    # Child reconciliation for standard element parents (non-Listbox)
     old_kids, new_kids = old_v.children, new_v.children
     common = min(len(old_kids), len(new_kids))
+
+    # Check if shapes are identical (same kind/tag/key for each common index,
+    # and same length). If not, full rebuild avoids pack-index issues.
+    shape_ok = (len(old_kids) == len(new_kids))
+    print(shape_ok)
+    if shape_ok:
+        for i in range(common):
+            print(i)
+            print(old_kids[i], new_kids[i])
+            if not same_node(old_kids[i], new_kids[i]):
+                shape_ok = False
+                break
+
+    def rebuild_children():
+        print("rebuild children")
+        # Destroy all existing child widgets and recreate in new order
+        kids = widget.winfo_children() if widget and widget.winfo_exists() else []
+        for k in kids:
+            try:
+                if k and k.winfo_exists():
+                    k.destroy()
+            except Exception:
+                pass
+        for nv in new_kids:
+            create_element(nv, widget)
+
+    if not shape_ok:
+        rebuild_children()
+        return new_v
+
+    # Shapes match → patch in place by index
     for i in range(common):
         patch(widget, old_kids[i], new_kids[i], i)
 
@@ -228,6 +260,13 @@ def mount_vdom(host, render_fn):
         new_tree = render_fn()
         old[0] = patch(host, old[0], new_tree)
     def unmount():
+        try:
+            is_n_closed = host.winfo_exists()
+        except Exception:
+            is_n_closed = False
+        if not is_n_closed:
+            old[0] = None
+            return
         for c in host.winfo_children():
             c.destroy()
         old[0] = None
