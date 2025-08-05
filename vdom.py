@@ -1,4 +1,3 @@
-# vdom.py
 import tkinter as tk
 from tkinter import ttk
 from weakref import WeakKeyDictionary
@@ -40,7 +39,7 @@ TAG_MAP = {
     "span": ttk.Label,
     "button": ttk.Button,
     "input": ttk.Entry,
-    "ul": tk.Listbox,  # ttk has no listbox
+    "ul": tk.Listbox,
 }
 
 def set_prop(w, name, value):
@@ -104,13 +103,12 @@ def create_element(vnode, parent):
     return w
 
 def same_node(a, b):
-    """Check if two nodes represent the same logical element"""
     if type(a) is not type(b):
         return False
     if isinstance(a, str):
-        return True  # All text nodes are considered "same" for positioning
+        return True
     if isinstance(a, TextVNode):
-        return True  # All text nodes are considered "same" for positioning
+        return True
     if isinstance(a, PortalVNode):
         return a.key is not None and a.key == b.key
     if a.key is not None or b.key is not None:
@@ -118,7 +116,6 @@ def same_node(a, b):
     return a.tag == b.tag
 
 def nodes_equal(a, b):
-    """Check if two nodes are completely equal (no update needed)"""
     if type(a) is not type(b):
         return False
     
@@ -134,18 +131,15 @@ def nodes_equal(a, b):
                 nodes_equal(a.child, b.child))
     
     if isinstance(a, ElementVNode):
-        # Check memo key first for quick bailout
         if a.memo_key and b.memo_key and a.memo_key == b.memo_key:
             return True
         
-        # Check basic properties
         if (a.tag != b.tag or 
             a.key != b.key or 
             a.props != b.props or
             len(a.children) != len(b.children)):
             return False
         
-        # Check all children
         for old_child, new_child in zip(a.children, b.children):
             if not nodes_equal(old_child, new_child):
                 return False
@@ -155,19 +149,11 @@ def nodes_equal(a, b):
     return False
 
 def find_child_mapping(old_children, new_children):
-    """
-    Create a mapping of how old children should be rearranged to match new children.
-    Returns (moves, creates, deletes) where:
-    - moves: list of (old_index, new_index) for children that moved
-    - creates: list of (new_index, new_vnode) for new children
-    - deletes: list of old_index for children to delete
-    """
-    old_keyed = {}  # key -> (index, vnode)
-    old_by_index = {}  # index -> vnode
-    new_keyed = {}  # key -> (index, vnode)
-    new_by_index = {}  # index -> vnode
+    old_keyed = {}
+    old_by_index = {}
+    new_keyed = {}
+    new_by_index = {}
     
-    # Build lookup tables
     for i, child in enumerate(old_children):
         old_by_index[i] = child
         if hasattr(child, 'key') and child.key is not None:
@@ -183,7 +169,6 @@ def find_child_mapping(old_children, new_children):
     deletes = []
     used_old_indices = set()
     
-    # First pass: handle keyed children
     for new_idx, new_child in enumerate(new_children):
         if hasattr(new_child, 'key') and new_child.key is not None:
             if new_child.key in old_keyed:
@@ -194,16 +179,13 @@ def find_child_mapping(old_children, new_children):
             else:
                 creates.append((new_idx, new_child))
     
-    # Second pass: handle non-keyed children by trying to match by type/tag
     remaining_old = [(i, child) for i, child in enumerate(old_children) 
                      if i not in used_old_indices]
     remaining_new = [(i, child) for i, child in enumerate(new_children)
                      if not (hasattr(child, 'key') and child.key is not None)]
     
-    # Try to match remaining children by similarity
     for new_idx, new_child in remaining_new:
         matched = False
-        # Look for a matching old child starting from current position
         for j in range(len(remaining_old)):
             old_idx, old_child = remaining_old[j]
             if same_node(old_child, new_child):
@@ -217,7 +199,6 @@ def find_child_mapping(old_children, new_children):
         if not matched:
             creates.append((new_idx, new_child))
     
-    # Mark remaining old children for deletion
     for old_idx, _ in remaining_old:
         deletes.append(old_idx)
     
@@ -226,39 +207,32 @@ def find_child_mapping(old_children, new_children):
 def _mount_portal(vnode):
     host = vnode.host
     if host is None:
-        return  # host missing, nothing to mount into
+        return
     
     rec = MOUNTED.get(host)
     if not rec:
-        # Clear host and create new
         for c in host.winfo_children():
             c.destroy()
         w = create_element(vnode.child, host)
         MOUNTED[host] = {"widget": w, "vnode": vnode.child}
     else:
-        # Patch existing
         rec["vnode"] = patch(host, rec["vnode"], vnode.child)
         MOUNTED[host] = rec
 
 def patch(parent, old_v, new_v, index=0):
-    """Improved patch function with better diffing"""
-    # Parent may be missing (e.g., previously destroyed); bail out safely.
     if parent is None:
         return new_v
 
     children = parent.winfo_children()
     target = children[index] if index < len(children) else None
 
-    # Mount new
     if old_v is None:
         create_element(new_v, parent)
         return new_v
 
-    # Quick equality check - if nodes are completely equal, do nothing
     if nodes_equal(old_v, new_v):
         return new_v
 
-    # Text nodes
     if (isinstance(old_v, str) or isinstance(new_v, str) or 
         isinstance(old_v, TextVNode) or isinstance(new_v, TextVNode)):
         old_t = old_v.text if isinstance(old_v, TextVNode) else old_v
@@ -270,7 +244,6 @@ def patch(parent, old_v, new_v, index=0):
                 create_element(new_v, parent)
         return new_v
 
-    # Portals
     if isinstance(old_v, PortalVNode) or isinstance(new_v, PortalVNode):
         if not same_node(old_v, new_v):
             if target and target.winfo_exists():
@@ -280,34 +253,28 @@ def patch(parent, old_v, new_v, index=0):
         _mount_portal(new_v)
         return new_v
 
-    # Different element type → replace
     if not same_node(old_v, new_v):
         if target and target.winfo_exists():
             target.destroy()
         create_element(new_v, parent)
         return new_v
 
-    # Memo skip - but we already checked complete equality above
     if (old_v.memo_key and new_v.memo_key and 
         old_v.memo_key == new_v.memo_key):
         return new_v
 
     widget = target
-    # If target widget vanished for any reason, just recreate subtree
     if widget is None or not widget.winfo_exists():
         create_element(new_v, parent)
         return new_v
 
-    # Update props only if they changed
     old_p, new_p = old_v.props, new_v.props
     if old_p != new_p:
         for k in set(old_p) | set(new_p):
             if old_p.get(k) != new_p.get(k):
                 set_prop(widget, k, new_p.get(k))
 
-    # Handle children based on widget type
     if isinstance(widget, tk.Listbox):
-        # For listbox, we need to check if items actually changed
         old_items = []
         new_items = []
         
@@ -333,7 +300,6 @@ def patch(parent, old_v, new_v, index=0):
             else:
                 new_items.append(str(c))
         
-        # Only update listbox if items changed
         if old_items != new_items:
             widget.delete(0, tk.END)
             for item in new_items:
@@ -341,52 +307,39 @@ def patch(parent, old_v, new_v, index=0):
         
         return new_v
 
-    # Enhanced child reconciliation
     old_kids, new_kids = old_v.children, new_v.children
     
-    # If no children in both old and new, nothing to do
     if not old_kids and not new_kids:
         return new_v
     
-    # Get current child widgets
     current_widgets = widget.winfo_children() if widget and widget.winfo_exists() else []
     
-    # Simple case: if structure is exactly the same, just patch in place
     if (len(old_kids) == len(new_kids) and 
         all(same_node(old_kids[i], new_kids[i]) for i in range(len(old_kids)))):
         
-        # Patch each child in place
         for i in range(len(new_kids)):
             if i < len(current_widgets) and current_widgets[i].winfo_exists():
                 patch(widget, old_kids[i], new_kids[i], i)
             else:
-                # Widget missing, recreate this child
                 create_element(new_kids[i], widget)
         return new_v
     
-    # Complex case: children were added, removed, or reordered
     moves, creates, deletes = find_child_mapping(old_kids, new_kids)
     
-    # Apply deletes first (in reverse order to maintain indices)
     for old_idx in sorted(deletes, reverse=True):
         if old_idx < len(current_widgets) and current_widgets[old_idx].winfo_exists():
             current_widgets[old_idx].destroy()
     
-    # Refresh widget list after deletions
     current_widgets = widget.winfo_children() if widget and widget.winfo_exists() else []
     
-    # Apply moves and updates
-    # We need to be careful about order here - tkinter pack order matters
-    widget_mapping = {}  # old_index -> widget
+    widget_mapping = {}
     for i, w in enumerate(current_widgets):
         if i < len(old_kids):
             widget_mapping[i] = w
     
-    # Create new children and update existing ones
     final_widgets: list = [None] * len(new_kids)
     
     for i, new_child in enumerate(new_kids):
-        # Check if this is a moved child
         moved_from = None
         for old_idx, new_idx in moves:
             if new_idx == i:
@@ -394,26 +347,21 @@ def patch(parent, old_v, new_v, index=0):
                 break
         
         if moved_from is not None:
-            # This is a moved child, patch it
             old_widget = widget_mapping.get(moved_from)
             if old_widget and old_widget.winfo_exists():
                 patch(widget, old_kids[moved_from], new_child, moved_from)
                 final_widgets[i] = old_widget
             else:
-                # Widget was destroyed, recreate
                 final_widgets[i] = create_element(new_child, widget)
         else:
-            # Check if this position had a child that wasn't moved
             found_existing = False
             if i < len(old_kids):
-                # Check if old child at this position is staying
                 staying = True
                 for old_idx, new_idx in moves:
                     if old_idx == i:
                         staying = False
                         break
                 if staying and i not in deletes and same_node(old_kids[i], new_child):
-                    # Patch existing child in place
                     old_widget = widget_mapping.get(i)
                     if old_widget and old_widget.winfo_exists():
                         patch(widget, old_kids[i], new_child, i)
@@ -421,11 +369,8 @@ def patch(parent, old_v, new_v, index=0):
                         found_existing = True
             
             if not found_existing:
-                # Create new child
                 final_widgets[i] = create_element(new_child, widget)
     
-    # Reorder widgets if necessary (pack order matters)
-    # For simplicity, we'll repack all children in the correct order
     for w in final_widgets:
         if w and w.winfo_exists():
             w.pack_forget()
@@ -433,12 +378,29 @@ def patch(parent, old_v, new_v, index=0):
 
     return new_v
 
+# vdom.py - Modified mount_vdom function
 def mount_vdom(host, render_fn):
     old = [None]
+    
     def update():
         new_tree = render_fn()
+        
+        # Check if host is a child list (for collecting VDOMs)
+        if isinstance(host, list):
+            # Clear the list and append new VDOM
+            host.clear()
+            host.append(new_tree)
+            return
+        
+        # Normal rendering to actual widget
         old[0] = patch(host, old[0], new_tree)
+    
     def unmount():
+        if isinstance(host, list):
+            host.clear()
+            old[0] = None
+            return
+            
         try:
             is_n_closed = host.winfo_exists()
         except Exception:
@@ -449,4 +411,5 @@ def mount_vdom(host, render_fn):
         for c in host.winfo_children():
             c.destroy()
         old[0] = None
+    
     return update, unmount

@@ -36,7 +36,7 @@ def main():
             print("Events:", evs)
         tick += 1
         app.send({"tick": tick})
-        root.after(500, pump)
+        root.after(1000, pump)
 
     root.after(1000, pump)
     root.minsize(560, 380)

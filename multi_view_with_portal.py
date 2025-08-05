@@ -1,11 +1,12 @@
-# multi_view_with_portal.py
+# multi_view_with_portal.py - Modified child components
 from vdom import h, Portal, mount_vdom
 from scheduler import Scheduler
 from memo import create_memo, memo_key_from
+from typing import Generator
 
-# Tab Navigation Component (Coroutine)
-def TabNavigation(initial_active="counter"):
-    """Tab navigation component with its own state"""
+
+def TabNavigation(vdom_ref, initial_active="counter"):
+    """Tab navigation component that populates vdom_ref"""
     state = {"active": initial_active}
     
     def push_event(event_type, payload):
@@ -19,7 +20,7 @@ def TabNavigation(initial_active="counter"):
     
     def render():
         mk = memo_key_from([state["active"]])
-        return h(
+        vdom = h(
             "div",
             {"class": "tabs"},
             [
@@ -29,7 +30,6 @@ def TabNavigation(initial_active="counter"):
                         "text": "Counter", 
                         "command": lambda: events.append(on_switch("counter"))
                     },
-                    memo_key=mk,
                 ),
                 h(
                     "button",
@@ -37,36 +37,45 @@ def TabNavigation(initial_active="counter"):
                         "text": "List", 
                         "command": lambda: events.append(on_switch("list"))
                     },
-                    memo_key=mk,
                 ),
             ],
             memo_key=mk,
         )
+        # Populate the reference
+        vdom_ref.clear()
+        vdom_ref.append(vdom)
+        return vdom
     
+    # Mount to the reference list
+    update, unmount = mount_vdom(vdom_ref, render)
     events = []
+    
+    def request_render():
+        update()
     
     try:
         # Initial render
-        parent_msg = yield {"vdom": render(), "events": []}
+        request_render()
+        parent_msg = yield {"events": []}
         
         while True:
-            # Update state from parent if needed
+            # Update from parent
             if parent_msg and isinstance(parent_msg, dict):
                 if "active_tab" in parent_msg:
                     state["active"] = parent_msg["active_tab"]
+                    request_render()
             
             # Collect and clear events
             out_events = [e for e in events if e is not None]
             events.clear()
             
-            # Yield updated render and events
-            parent_msg = yield {"vdom": render(), "events": out_events}
+            # Yield only events
+            parent_msg = yield {"events": out_events}
     except GeneratorExit:
-        pass
+        unmount()
 
-# Counter View Component (Coroutine)
-def CounterView():
-    """Counter component with its own state"""
+def CounterView(vdom_ref):
+    """Counter component that populates vdom_ref"""
     state = {"count": 0}
     parent_tick = 0
     
@@ -74,16 +83,18 @@ def CounterView():
         return {"type": event_type, "payload": payload, "source": "counter"}
     
     def on_inc():
+        print(state["count"], "increase")
         state["count"] += 1
         return push_event("counter_changed", state["count"])
     
     def on_dec():
+        print(state["count"], "decrease")
         state["count"] -= 1
         return push_event("counter_changed", state["count"])
     
     def render():
         mk = memo_key_from(["counter", parent_tick, state["count"]])
-        return h(
+        vdom = h(
             "div",
             {"class": "view counter"},
             [
@@ -94,33 +105,40 @@ def CounterView():
             ],
             memo_key=mk,
         )
+        # Populate the reference
+        vdom_ref.clear()
+        vdom_ref.append(vdom)
+        return vdom
     
+    update, unmount = mount_vdom(vdom_ref, render)
     events = []
     
+    def request_render():
+        update()
+    
     try:
-        # Initial render
-        parent_msg = yield {"vdom": render(), "events": []}
+        request_render()
+        parent_msg = yield {"events": []}
         
         while True:
-            # Update from parent
             if parent_msg and isinstance(parent_msg, dict):
                 if "parent_tick" in parent_msg:
                     parent_tick = parent_msg["parent_tick"]
                 if "count" in parent_msg:
                     state["count"] = parent_msg["count"]
+                request_render()
             
-            # Collect and clear events
             out_events = [e for e in events if e is not None]
             events.clear()
             
-            # Yield updated render and events
-            parent_msg = yield {"vdom": render(), "events": out_events}
+            print("CounterView events:", out_events)
+            parent_msg = yield {"events": out_events}
+            print("back:", parent_msg)
     except GeneratorExit:
-        pass
+        unmount()
 
-# List Filter Component (Coroutine)
-def ListFilter():
-    """List filter component with its own state"""
+def ListFilter(vdom_ref):
+    """List filter component that populates vdom_ref"""
     state = {"filter": ""}
     
     def push_event(event_type, payload):
@@ -136,7 +154,7 @@ def ListFilter():
     
     def render():
         mk = memo_key_from(["filter", state["filter"]])
-        return h(
+        vdom = h(
             "div",
             {"class": "list-controls"},
             [
@@ -151,34 +169,43 @@ def ListFilter():
             ],
             memo_key=mk,
         )
+        vdom_ref.clear()
+        vdom_ref.append(vdom)
+        return vdom
     
+    update, unmount = mount_vdom(vdom_ref, render)
     events = []
     
+    def request_render():
+        update()
+    
     try:
-        # Initial render
-        parent_msg = yield {"vdom": render(), "events": []}
+        request_render()
+        parent_msg = yield {"events": []}
         
         while True:
-            # Update from parent
             if parent_msg and isinstance(parent_msg, dict):
                 if "filter" in parent_msg:
                     state["filter"] = parent_msg["filter"]
+                    request_render()
             
-            # Collect and clear events
             out_events = [e for e in events if e is not None]
             events.clear()
             
-            # Yield updated render and events
-            parent_msg = yield {"vdom": render(), "events": out_events}
+            parent_msg = yield {"events": out_events}
     except GeneratorExit:
-        pass
+        unmount()
 
-# List View Component (Coroutine)
-def ListView():
-    """List view component with its own state"""
+def ListView(vdom_ref):
+    """List view component that populates vdom_ref"""
     state = {"items": [], "filter": ""}
     parent_tick = 0
     memo_filtered = create_memo()
+    
+    # Create child filter component ONCE, outside of render
+    filter_vdom_ref = []
+    child_filter = ListFilter(filter_vdom_ref)
+    next(child_filter)  # Initialize it once
     
     def push_event(event_type, payload):
         return {"type": event_type, "payload": payload, "source": "list_view"}
@@ -200,30 +227,32 @@ def ListView():
         
         filtered_items = get_filtered()
         
-        # Create child filter component
-        filter_component = ListFilter()
-        filter_result = next(filter_component)
-        
-        return h(
+        # Use the existing filter component's VDOM, don't create new one
+        vdom = h(
             "div",
             {"class": "view list"},
             [
-                filter_result["vdom"],
+                filter_vdom_ref[0] if filter_vdom_ref else h("div"),
                 h("ul", {}, filtered_items, memo_key=mk),
             ],
             memo_key=mk,
-        ), filter_component
+        )
+        
+        vdom_ref.clear()
+        vdom_ref.append(vdom)
+        return vdom
     
+    update, unmount = mount_vdom(vdom_ref, render)
     events = []
-    child_filter = None
+    
+    def request_render():
+        update()
     
     try:
-        # Initial render
-        vdom, child_filter = render()
-        parent_msg = yield {"vdom": vdom, "events": []}
+        request_render()
+        parent_msg = yield {"events": []}
         
         while True:
-            # Update from parent
             if parent_msg and isinstance(parent_msg, dict):
                 if "parent_tick" in parent_msg:
                     parent_tick = parent_msg["parent_tick"]
@@ -231,41 +260,39 @@ def ListView():
                     state["items"] = parent_msg["items"]
                 if "filter" in parent_msg:
                     state["filter"] = parent_msg["filter"]
+                
+                # Update child filter component with new state
+                if child_filter:
+                    try:
+                        child_msg = {"filter": state["filter"]}
+                        child_result = child_filter.send(child_msg)
+                        
+                        # Handle child events
+                        for event in child_result["events"]:
+                            if event["type"] == "filter_changed":
+                                state["filter"] = event["payload"]
+                                events.append(push_event("filter_changed", event["payload"]))
+                            elif event["type"] == "item_add_requested":
+                                new_item = f"Item {len(state['items']) + 1} @t{parent_tick}"
+                                state["items"] = state["items"] + [new_item]
+                                events.append(push_event("item_added", new_item))
+                    except StopIteration:
+                        child_filter = None
+                
+                request_render()  # Re-render after updates
             
-            # Update child filter component
-            if child_filter:
-                try:
-                    child_msg = {"filter": state["filter"]}
-                    child_result = child_filter.send(child_msg)
-                    
-                    # Handle child events
-                    for event in child_result["events"]:
-                        if event["type"] == "filter_changed":
-                            state["filter"] = event["payload"]
-                            events.append(push_event("filter_changed", event["payload"]))
-                        elif event["type"] == "item_add_requested":
-                            new_item = f"Item {len(state['items']) + 1} @t{parent_tick}"
-                            state["items"] = state["items"] + [new_item]
-                            events.append(push_event("item_added", new_item))
-                except StopIteration:
-                    child_filter = None
-            
-            # Collect and clear events
             out_events = [e for e in events if e is not None]
             events.clear()
             
-            # Re-render
-            vdom, child_filter = render()
-            
-            # Yield updated render and events
-            parent_msg = yield {"vdom": vdom, "events": out_events}
+            parent_msg = yield {"events": out_events}
     except GeneratorExit:
+        unmount()
         if child_filter:
             child_filter.close()
 
-# Status Bar Component (Coroutine)
-def StatusBar(portal_host):
-    """Status bar component rendered in portal"""
+
+def StatusBar(vdom_ref, portal_host):
+    """Status bar component that populates vdom_ref"""
     state = {
         "active": "counter",
         "parent_tick": 0,
@@ -281,22 +308,27 @@ def StatusBar(portal_host):
             f"Items: {state['items_count']}"
         )
         
-        print(status_text)  # Debug output
-        
         status_content = h(
             "div", 
             {"class": "status"}, 
             [h("span", {"text": status_text})]
         )
         
-        return Portal(portal_host, status_content, key=status_text)
+        vdom = Portal(portal_host, status_content, key=status_text)
+        vdom_ref.clear()
+        vdom_ref.append(vdom)
+        return vdom
+    
+    update, unmount = mount_vdom(vdom_ref, render)
+    
+    def request_render():
+        update()
     
     try:
-        # Initial render
-        parent_msg = yield {"vdom": render(), "events": []}
+        request_render()
+        parent_msg = yield {"events": []}
         
         while True:
-            # Update from parent
             if parent_msg and isinstance(parent_msg, dict):
                 if "active" in parent_msg:
                     state["active"] = parent_msg["active"]
@@ -306,15 +338,14 @@ def StatusBar(portal_host):
                     state["counter_count"] = parent_msg["counter_count"]
                 if "items_count" in parent_msg:
                     state["items_count"] = parent_msg["items_count"]
+                request_render()
             
-            # Status bar doesn't generate events, only displays state
-            parent_msg = yield {"vdom": render(), "events": []}
+            parent_msg = yield {"events": []}
     except GeneratorExit:
-        pass
+        unmount()
 
-# Header Component (Coroutine)
-def Header():
-    """Header component with memoized title"""
+def Header(vdom_ref):
+    """Header component that populates vdom_ref"""
     state = {"title": "", "active": "counter", "parent_tick": 0}
     memo_header = create_memo()
     
@@ -324,14 +355,21 @@ def Header():
             [state["title"], state["active"], state["parent_tick"]],
         )
         
-        return h("h2", {"text": header_text})
+        vdom = h("h2", {"text": header_text})
+        vdom_ref.clear()
+        vdom_ref.append(vdom)
+        return vdom
+    
+    update, unmount = mount_vdom(vdom_ref, render)
+    
+    def request_render():
+        update()
     
     try:
-        # Initial render
-        parent_msg = yield {"vdom": render(), "events": []}
+        request_render()
+        parent_msg = yield {"events": []}
         
         while True:
-            # Update from parent
             if parent_msg and isinstance(parent_msg, dict):
                 if "title" in parent_msg:
                     state["title"] = parent_msg["title"]
@@ -339,13 +377,12 @@ def Header():
                     state["active"] = parent_msg["active"]
                 if "parent_tick" in parent_msg:
                     state["parent_tick"] = parent_msg["parent_tick"]
+                request_render()
             
-            # Header doesn't generate events, only displays state
-            parent_msg = yield {"vdom": render(), "events": []}
+            parent_msg = yield {"events": []}
     except GeneratorExit:
-        pass
+        unmount()
 
-# Main Multi-View Component (Coroutine)
 def MultiViewWithPortal(args, host, portal_host):
     out = []
 
@@ -364,12 +401,19 @@ def MultiViewWithPortal(args, host, portal_host):
     shared_counter = {"count": 0}
     shared_list = {"items": [], "filter": ""}
 
-    # Child components
-    header_comp = Header()
-    tabs_comp = TabNavigation(state["active"])
-    counter_comp = CounterView()
-    list_comp = ListView()
-    status_comp = StatusBar(portal_host)
+    # VDOM references for children
+    header_vdom_ref = []
+    tabs_vdom_ref = []
+    counter_vdom_ref = []
+    list_vdom_ref = []
+    status_vdom_ref = []
+
+    # Child components with VDOM references
+    header_comp = Header(header_vdom_ref)
+    tabs_comp = TabNavigation(tabs_vdom_ref, state["active"])
+    counter_comp = CounterView(counter_vdom_ref)
+    list_comp = ListView(list_vdom_ref)
+    status_comp = StatusBar(status_vdom_ref, portal_host)
     
     # Initialize child components
     header_result = next(header_comp)
@@ -426,7 +470,7 @@ def MultiViewWithPortal(args, host, portal_host):
                 shared_list["filter"] = event["payload"]
                 push({"type": "filtered", "payload": event["payload"]})
             elif event["type"] == "item_added":
-                shared_list["items"] = list_result["events"][0]["payload"] if list_result["events"] else shared_list["items"]
+                shared_list["items"] = shared_list["items"] + [event["payload"]]
         
         # Update status
         status_msg = {
@@ -438,20 +482,20 @@ def MultiViewWithPortal(args, host, portal_host):
         status_result = status_comp.send(status_msg)
 
     def root_view():
-        # Select current view
+        # Select current view from VDOM references
         if state["active"] == "counter":
-            current_view = counter_result["vdom"]
+            current_view = counter_vdom_ref[0] if counter_vdom_ref else h("div")
         else:
-            current_view = list_result["vdom"]
+            current_view = list_vdom_ref[0] if list_vdom_ref else h("div")
 
         return h(
             "section",
             {"class": "multi-view-with-portal"},
             [
-                header_result["vdom"],
-                tabs_result["vdom"],
+                header_vdom_ref[0] if header_vdom_ref else h("div"),
+                tabs_vdom_ref[0] if tabs_vdom_ref else h("div"),
                 current_view,
-                status_result["vdom"],
+                status_vdom_ref[0] if status_vdom_ref else h("div"),
             ],
             memo_key=memo_key_from([
                 args["title"], 
@@ -479,9 +523,9 @@ def MultiViewWithPortal(args, host, portal_host):
             if parent_msg and isinstance(parent_msg, dict) and "tick" in parent_msg:
                 state["parent_tick"] = parent_msg["tick"]
                 request_render()
-            scheduler.defer()
-            parent_msg = yield flush()
             scheduler.flush()
+            parent_msg = yield flush()
+            scheduler.defer()
     finally:
         scheduler.cancel()
         unmount()
