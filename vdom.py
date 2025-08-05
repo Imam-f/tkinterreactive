@@ -110,7 +110,7 @@ def same_node(a, b):
     if isinstance(a, str):
         return True
     if isinstance(a, PortalVNode):
-        print("same portal", a.key, b.key)
+        # print("same portal", a.key, b.key)
         return a.key is not None and a.key == b.key
     if a.key is not None or b.key is not None:
         return a.key == b.key and a.tag == b.tag
@@ -197,60 +197,47 @@ def patch(parent, old_v, new_v, index=0):
         widget.delete(0, tk.END)
         for c in new_v.children:
             text = c if isinstance(c, str) else getattr(c, "text", str(c))
+            # Extract text from VNode properly
+            if isinstance(c, str):
+                text = c
+            elif isinstance(c, TextVNode):
+                text = c.text
+            elif hasattr(c, 'children') and c.children:
+                # If it's an element with text children, extract the first text child
+                first_child = c.children[0] if c.children else ""
+                text = first_child if isinstance(first_child, str) else str(first_child)
+            else:
+                text = str(c)
             widget.insert(tk.END, text)
         return new_v
 
-    # Child reconciliation for standard element parents (non-Listbox)
+    # Fixed child reconciliation
     old_kids, new_kids = old_v.children, new_v.children
-    common = min(len(old_kids), len(new_kids))
-
-    # Check if shapes are identical (same kind/tag/key for each common index,
-    # and same length). If not, full rebuild avoids pack-index issues.
-    shape_ok = (len(old_kids) == len(new_kids))
-    print(shape_ok)
-    if shape_ok:
-        for i in range(common):
-            print(i)
-            print(old_kids[i], new_kids[i])
+    
+    # First, clear all existing children if the structure changed significantly
+    current_widgets = widget.winfo_children() if widget and widget.winfo_exists() else []
+    
+    # Check if we need a full rebuild (different child count or major structure change)
+    needs_rebuild = len(old_kids) != len(new_kids)
+    if not needs_rebuild:
+        # Check if any child types changed
+        for i in range(len(old_kids)):
             if not same_node(old_kids[i], new_kids[i]):
-                shape_ok = False
+                needs_rebuild = True
                 break
-
-    def rebuild_children():
-        print("rebuild children")
-        # Destroy all existing child widgets and recreate in new order
-        kids = widget.winfo_children() if widget and widget.winfo_exists() else []
-        for k in kids:
-            try:
-                if k and k.winfo_exists():
-                    k.destroy()
-            except Exception:
-                pass
-        for nv in new_kids:
-            create_element(nv, widget)
-
-    if not shape_ok:
-        rebuild_children()
-        return new_v
-
-    # Shapes match → patch in place by index
-    for i in range(common):
-        patch(widget, old_kids[i], new_kids[i], i)
-
-    # Remove extras (refresh the list each time because it changes as we destroy)
-    def current_children(w):
-        return w.winfo_children() if w and w.winfo_exists() else []
-
-    kids = current_children(widget)
-    while len(kids) > len(new_kids):
-        last = kids[-1]
-        if last and last.winfo_exists():
-            last.destroy()
-        kids = current_children(widget)
-
-    # Append new
-    for i in range(common, len(new_kids)):
-        create_element(new_kids[i], widget)
+    
+    if needs_rebuild:
+        # Clear all children and rebuild
+        for w in current_widgets:
+            if w and w.winfo_exists():
+                w.destroy()
+        # Create all new children
+        for new_child in new_kids:
+            create_element(new_child, widget)
+    else:
+        # Structure is the same, patch children in place
+        for i in range(len(new_kids)):
+            patch(widget, old_kids[i], new_kids[i], i)
 
     return new_v
 
