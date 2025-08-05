@@ -129,7 +129,7 @@ def CounterView(vdom_ref, request_render_immediate: None | Callable = None):
                 #     state["count"] = parent_msg["count"]
                 request_render()
             
-            print(events)
+            # print(events)
             out_events = [e for e in events if e is not None]
             events.clear()
             
@@ -516,22 +516,7 @@ def MultiViewWithPortal(args, host, portal_host):
         scheduler.request()
     
     def request_immediate():
-        # global pump
-        # import sys
-        # pump = sys.modules["__main__"].pump
-        # app = pump.__closure__[0].cell_contents
-        # print(dir(pump), pump.__closure__[0])
-        
-        # update_children()
-        counter_msg = {
-            "parent_tick": state["parent_tick"]
-        }
-        counter_result = counter_comp.send(counter_msg)
         scheduler.request_immediate()
-        
-        # host_parent = host.winfo_toplevel()
-        # host_parent.after(1, lambda: app.send({}))
-        # host_parent.after(1, lambda: None)
 
     # Component lifecycle
     try:
@@ -541,9 +526,9 @@ def MultiViewWithPortal(args, host, portal_host):
             if parent_msg and isinstance(parent_msg, dict) and "tick" in parent_msg:
                 state["parent_tick"] = parent_msg["tick"]
                 request_render()
-            # scheduler.flush()
+            scheduler.flush()
             parent_msg = yield flush()
-            # scheduler.defer()
+            scheduler.defer()
     finally:
         scheduler.cancel()
         unmount()

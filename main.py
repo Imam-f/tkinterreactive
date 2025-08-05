@@ -28,9 +28,9 @@ def main():
     app = run_component(gen)
 
     tick = 0
-    # fps = 144
+    fps = 144
     # fps = 10
-    fps = 1
+    # fps = 1
 
     global pump
     def pump():
@@ -40,8 +40,8 @@ def main():
             print("Events:", evs)
         tick += 1
         app.send({"tick": tick//fps})
-        # root.after(1000//fps, pump)
-        root.after(5000, pump)
+        root.after(1000//fps, pump)
+        # root.after(5000, pump)
 
     root.after(1000, pump)
     root.minsize(560, 380)
