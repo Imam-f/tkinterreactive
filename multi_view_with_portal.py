@@ -154,7 +154,6 @@ def MultiViewWithPortal(args, host, portal_host):
     scheduler = Scheduler(update, host.winfo_toplevel())
 
     def request_render():
-        # print("late bind")
         scheduler.request()
 
     try:
@@ -164,7 +163,9 @@ def MultiViewWithPortal(args, host, portal_host):
             if parent_msg and isinstance(parent_msg, dict) and "tick" in parent_msg:
                 state["parent_tick"] = parent_msg["tick"]
                 request_render()
+            scheduler.defer()
             parent_msg = yield flush()
+            scheduler.flush()
     finally:
         scheduler.cancel()
         unmount()
