@@ -1,5 +1,4 @@
 # multi_view_with_portal.py
-import tkinter as tk
 from vdom import h, Portal, mount_vdom
 from scheduler import Scheduler
 from memo import create_memo, memo_key_from
