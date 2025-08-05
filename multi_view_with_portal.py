@@ -516,7 +516,13 @@ def MultiViewWithPortal(args, host, portal_host):
         scheduler.request()
     
     def request_immediate():
-        scheduler.request_immediate()
+        global pump
+        import sys
+        pump = sys.modules["__main__"].pump
+        app = pump.__closure__[0].cell_contents
+        
+        host_parent = host.winfo_toplevel()
+        host_parent.after(1, lambda: app.send({"type": "immediate"}))
 
     # Component lifecycle
     try:
@@ -526,6 +532,9 @@ def MultiViewWithPortal(args, host, portal_host):
             if parent_msg and isinstance(parent_msg, dict) and "tick" in parent_msg:
                 state["parent_tick"] = parent_msg["tick"]
                 request_render()
+            if parent_msg and isinstance(parent_msg, dict) and "type" in parent_msg:
+                update_children()
+                update()
             scheduler.flush()
             parent_msg = yield flush()
             scheduler.defer()
