@@ -28,6 +28,9 @@ def main():
     app = run_component(gen)
 
     tick = 0
+    fps = 144
+    # fps = 10
+    # fps = 1
 
     def pump():
         nonlocal tick
@@ -35,8 +38,8 @@ def main():
         if evs:
             print("Events:", evs)
         tick += 1
-        app.send({"tick": tick})
-        root.after(1000, pump)
+        app.send({"tick": tick//fps})
+        root.after(1000//fps, pump)
 
     root.after(1000, pump)
     root.minsize(560, 380)

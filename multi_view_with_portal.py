@@ -2,8 +2,8 @@
 from vdom import h, Portal, mount_vdom
 from scheduler import Scheduler
 from memo import create_memo, memo_key_from
-from typing import Generator
 
+import time
 
 def TabNavigation(vdom_ref, initial_active="counter"):
     """Tab navigation component that populates vdom_ref"""
@@ -78,22 +78,27 @@ def CounterView(vdom_ref):
     """Counter component that populates vdom_ref"""
     state = {"count": 0}
     parent_tick = 0
+    events = []
     
     def push_event(event_type, payload):
         return {"type": event_type, "payload": payload, "source": "counter"}
     
     def on_inc():
-        print(state["count"], "increase")
+        # print(state["count"], "increase")
         state["count"] += 1
+        request_render()
         return push_event("counter_changed", state["count"])
     
     def on_dec():
-        print(state["count"], "decrease")
+        # print(state["count"], "decrease")
         state["count"] -= 1
+        request_render()
         return push_event("counter_changed", state["count"])
     
     def render():
+        # print("CounterView render")
         mk = memo_key_from(["counter", parent_tick, state["count"]])
+        # print("mk:", mk, state["count"])
         vdom = h(
             "div",
             {"class": "view counter"},
@@ -111,9 +116,9 @@ def CounterView(vdom_ref):
         return vdom
     
     update, unmount = mount_vdom(vdom_ref, render)
-    events = []
     
     def request_render():
+        # print('request_render')
         update()
     
     try:
@@ -124,16 +129,17 @@ def CounterView(vdom_ref):
             if parent_msg and isinstance(parent_msg, dict):
                 if "parent_tick" in parent_msg:
                     parent_tick = parent_msg["parent_tick"]
-                if "count" in parent_msg:
-                    state["count"] = parent_msg["count"]
+                # if "count" in parent_msg:
+                #     state["count"] = parent_msg["count"]
                 request_render()
             
             out_events = [e for e in events if e is not None]
             events.clear()
             
-            print("CounterView events:", out_events)
+            # print("CounterView events:", out_events, state["count"])
             parent_msg = yield {"events": out_events}
-            print("back:", parent_msg)
+            # print("back:", parent_msg)
+            # time.sleep(0.5)
     except GeneratorExit:
         unmount()
 
@@ -508,7 +514,9 @@ def MultiViewWithPortal(args, host, portal_host):
         )
 
     # Setup VDOM mounting and scheduler
+    global updater
     update, unmount = mount_vdom(host, root_view)
+    updater = update
     scheduler = Scheduler(update, host.winfo_toplevel())
 
     def request_render():
