@@ -116,6 +116,9 @@ def same_node(a, b):
 
 def _mount_portal(vnode):
     host = vnode.host
+    if host is None:
+        return  # host missing, nothing to mount into
+    # Clear host (portal host is separate from the main tree)
     for c in host.winfo_children():
         c.destroy()
     rec = MOUNTED.get(host)
@@ -123,17 +126,25 @@ def _mount_portal(vnode):
         w = create_element(vnode.child, host)
         MOUNTED[host] = {"widget": w, "vnode": vnode.child}
     else:
+        # Always patch into the portal host (valid widget)
         rec["vnode"] = patch(host, rec["vnode"], vnode.child)
         MOUNTED[host] = rec
 
+
 def patch(parent, old_v, new_v, index=0):
+    # Parent may be missing (e.g., previously destroyed); bail out safely.
+    if parent is None:
+        return new_v
+
     children = parent.winfo_children()
     target = children[index] if index < len(children) else None
 
+    # Mount new
     if old_v is None:
         create_element(new_v, parent)
         return new_v
 
+    # Text nodes
     if (
         isinstance(old_v, str)
         or isinstance(new_v, str)
@@ -143,34 +154,44 @@ def patch(parent, old_v, new_v, index=0):
         old_t = old_v.text if isinstance(old_v, TextVNode) else old_v
         new_t = new_v.text if isinstance(new_v, TextVNode) else new_v
         if old_t != new_t:
-            if target:
+            if target and target.winfo_exists():
                 target.destroy()
             create_element(new_v, parent)
         return new_v
 
+    # Portals
     if isinstance(old_v, PortalVNode) or isinstance(new_v, PortalVNode):
         if not same_node(old_v, new_v):
-            if target:
+            if target and target.winfo_exists():
                 target.destroy()
             return create_element(new_v, parent)
         _mount_portal(new_v)
         return new_v
 
+    # Different element → replace
     if not same_node(old_v, new_v):
-        if target:
+        if target and target.winfo_exists():
             target.destroy()
         create_element(new_v, parent)
         return new_v
 
+    # Memo skip
     if old_v.memo_key and new_v.memo_key and old_v.memo_key == new_v.memo_key:
         return new_v
 
     widget = target
+    # If target widget vanished for any reason, just recreate subtree
+    if widget is None or not widget.winfo_exists():
+        create_element(new_v, parent)
+        return new_v
+
+    # Update props
     old_p, new_p = old_v.props, new_v.props
     for k in set(old_p) | set(new_p):
         if old_p.get(k) != new_p.get(k):
             set_prop(widget, k, new_p.get(k))
 
+    # Listbox: redraw items wholesale
     if isinstance(widget, tk.Listbox):
         widget.delete(0, tk.END)
         for c in new_v.children:
@@ -178,14 +199,24 @@ def patch(parent, old_v, new_v, index=0):
             widget.insert(tk.END, text)
         return new_v
 
+    # Diff children
     old_kids, new_kids = old_v.children, new_v.children
     common = min(len(old_kids), len(new_kids))
     for i in range(common):
         patch(widget, old_kids[i], new_kids[i], i)
-    kids = widget.winfo_children()
+
+    # Remove extras (refresh the list each time because it changes as we destroy)
+    def current_children(w):
+        return w.winfo_children() if w and w.winfo_exists() else []
+
+    kids = current_children(widget)
     while len(kids) > len(new_kids):
-        kids[-1].destroy()
-        kids = widget.winfo_children()
+        last = kids[-1]
+        if last and last.winfo_exists():
+            last.destroy()
+        kids = current_children(widget)
+
+    # Append new
     for i in range(common, len(new_kids)):
         create_element(new_kids[i], widget)
 
