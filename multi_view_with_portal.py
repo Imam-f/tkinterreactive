@@ -2,8 +2,7 @@
 from vdom import h, Portal, mount_vdom
 from scheduler import Scheduler
 from memo import create_memo, memo_key_from
-
-import time
+from typing import Callable
 
 def TabNavigation(vdom_ref, initial_active="counter"):
     """Tab navigation component that populates vdom_ref"""
@@ -74,7 +73,7 @@ def TabNavigation(vdom_ref, initial_active="counter"):
     except GeneratorExit:
         unmount()
 
-def CounterView(vdom_ref):
+def CounterView(vdom_ref, request_render_immediate: None | Callable = None):
     """Counter component that populates vdom_ref"""
     state = {"count": 0}
     parent_tick = 0
@@ -84,21 +83,19 @@ def CounterView(vdom_ref):
         return {"type": event_type, "payload": payload, "source": "counter"}
     
     def on_inc():
-        # print(state["count"], "increase")
         state["count"] += 1
-        request_render()
+        if request_render_immediate is not None:
+            request_render_immediate()
         return push_event("counter_changed", state["count"])
     
     def on_dec():
-        # print(state["count"], "decrease")
         state["count"] -= 1
-        request_render()
+        if request_render_immediate is not None:
+            request_render_immediate()
         return push_event("counter_changed", state["count"])
     
     def render():
-        # print("CounterView render")
         mk = memo_key_from(["counter", parent_tick, state["count"]])
-        # print("mk:", mk, state["count"])
         vdom = h(
             "div",
             {"class": "view counter"},
@@ -118,7 +115,6 @@ def CounterView(vdom_ref):
     update, unmount = mount_vdom(vdom_ref, render)
     
     def request_render():
-        # print('request_render')
         update()
     
     try:
@@ -129,17 +125,15 @@ def CounterView(vdom_ref):
             if parent_msg and isinstance(parent_msg, dict):
                 if "parent_tick" in parent_msg:
                     parent_tick = parent_msg["parent_tick"]
-                # if "count" in parent_msg:
+                # if "count" in parent_msg and len(events) == 0:
                 #     state["count"] = parent_msg["count"]
                 request_render()
             
+            print(events)
             out_events = [e for e in events if e is not None]
             events.clear()
             
-            # print("CounterView events:", out_events, state["count"])
             parent_msg = yield {"events": out_events}
-            # print("back:", parent_msg)
-            # time.sleep(0.5)
     except GeneratorExit:
         unmount()
 
@@ -202,7 +196,7 @@ def ListFilter(vdom_ref):
     except GeneratorExit:
         unmount()
 
-def ListView(vdom_ref):
+def ListView(vdom_ref, request_render_immediate: None | Callable = None):
     """List view component that populates vdom_ref"""
     state = {"items": [], "filter": ""}
     parent_tick = 0
@@ -417,8 +411,8 @@ def MultiViewWithPortal(args, host, portal_host):
     # Child components with VDOM references
     header_comp = Header(header_vdom_ref)
     tabs_comp = TabNavigation(tabs_vdom_ref, state["active"])
-    counter_comp = CounterView(counter_vdom_ref)
-    list_comp = ListView(list_vdom_ref)
+    counter_comp = CounterView(counter_vdom_ref, lambda: request_immediate())
+    list_comp = ListView(list_vdom_ref, lambda: request_immediate())
     status_comp = StatusBar(status_vdom_ref, portal_host)
     
     # Initialize child components
@@ -514,14 +508,30 @@ def MultiViewWithPortal(args, host, portal_host):
         )
 
     # Setup VDOM mounting and scheduler
-    global updater
     update, unmount = mount_vdom(host, root_view)
-    updater = update
     scheduler = Scheduler(update, host.winfo_toplevel())
 
     def request_render():
         update_children()
         scheduler.request()
+    
+    def request_immediate():
+        # global pump
+        # import sys
+        # pump = sys.modules["__main__"].pump
+        # app = pump.__closure__[0].cell_contents
+        # print(dir(pump), pump.__closure__[0])
+        
+        # update_children()
+        counter_msg = {
+            "parent_tick": state["parent_tick"]
+        }
+        counter_result = counter_comp.send(counter_msg)
+        scheduler.request_immediate()
+        
+        # host_parent = host.winfo_toplevel()
+        # host_parent.after(1, lambda: app.send({}))
+        # host_parent.after(1, lambda: None)
 
     # Component lifecycle
     try:
@@ -531,9 +541,9 @@ def MultiViewWithPortal(args, host, portal_host):
             if parent_msg and isinstance(parent_msg, dict) and "tick" in parent_msg:
                 state["parent_tick"] = parent_msg["tick"]
                 request_render()
-            scheduler.flush()
+            # scheduler.flush()
             parent_msg = yield flush()
-            scheduler.defer()
+            # scheduler.defer()
     finally:
         scheduler.cancel()
         unmount()

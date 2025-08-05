@@ -393,7 +393,9 @@ def mount_vdom(host, render_fn):
             return
         
         # Normal rendering to actual widget
+        # timer = time.perf_counter()
         old[0] = patch(host, old[0], new_tree)
+        # print("patch time = ", time.perf_counter() - timer)
     
     def unmount():
         if isinstance(host, list):
