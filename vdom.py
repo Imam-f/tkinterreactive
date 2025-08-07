@@ -150,59 +150,102 @@ def nodes_equal(a, b):
 
 def find_child_mapping(old_children, new_children):
     old_keyed = {}
-    old_by_index = {}
     new_keyed = {}
-    new_by_index = {}
     
+    # Build keyed maps
     for i, child in enumerate(old_children):
-        old_by_index[i] = child
         if hasattr(child, 'key') and child.key is not None:
             old_keyed[child.key] = (i, child)
     
     for i, child in enumerate(new_children):
-        new_by_index[i] = child
         if hasattr(child, 'key') and child.key is not None:
             new_keyed[child.key] = (i, child)
     
     moves = []
     creates = []
     deletes = []
+    patches = []  # New: children that can be patched in place
     used_old_indices = set()
+    used_new_indices = set()
     
+    # Step 1: Handle exact position matches first (patches in place)
+    min_len = min(len(old_children), len(new_children))
+    for i in range(min_len):
+        old_child = old_children[i]
+        new_child = new_children[i]
+        
+        # Skip if either is keyed (handle them separately)
+        old_is_keyed = hasattr(old_child, 'key') and old_child.key is not None
+        new_is_keyed = hasattr(new_child, 'key') and new_child.key is not None
+        
+        if old_is_keyed or new_is_keyed:
+            continue
+            
+        # If they can be the same node, patch in place
+        if same_node(old_child, new_child):
+            patches.append((i, i))  # (old_index, new_index)
+            used_old_indices.add(i)
+            used_new_indices.add(i)
+    
+    # Step 2: Handle keyed elements (moves/creates)
     for new_idx, new_child in enumerate(new_children):
+        if new_idx in used_new_indices:
+            continue
+            
         if hasattr(new_child, 'key') and new_child.key is not None:
             if new_child.key in old_keyed:
                 old_idx, old_child = old_keyed[new_child.key]
                 if old_idx != new_idx:
                     moves.append((old_idx, new_idx))
+                else:
+                    patches.append((old_idx, new_idx))  # Same position, patch it
                 used_old_indices.add(old_idx)
+                used_new_indices.add(new_idx)
             else:
                 creates.append((new_idx, new_child))
+                used_new_indices.add(new_idx)
     
+    # Step 3: Handle remaining unkeyed children
     remaining_old = [(i, child) for i, child in enumerate(old_children) 
                      if i not in used_old_indices]
     remaining_new = [(i, child) for i, child in enumerate(new_children)
-                     if not (hasattr(child, 'key') and child.key is not None)]
+                     if i not in used_new_indices]
     
-    for new_idx, new_child in remaining_new:
-        matched = False
-        for j in range(len(remaining_old)):
-            old_idx, old_child = remaining_old[j]
-            if same_node(old_child, new_child):
-                if old_idx != new_idx:
-                    moves.append((old_idx, new_idx))
-                used_old_indices.add(old_idx)
-                remaining_old.pop(j)
-                matched = True
-                break
+    # Try to match remaining children by same_node
+    for new_idx, new_child in remaining_new[:]:  # Copy list since we'll modify it
+        best_match = None
+        best_old_idx = None
         
-        if not matched:
-            creates.append((new_idx, new_child))
+        for j, (old_idx, old_child) in enumerate(remaining_old):
+            if same_node(old_child, new_child):
+                # Prefer matches that are closer to the target position
+                if best_match is None:
+                    best_match = j
+                    best_old_idx = old_idx
+                elif abs(old_idx - new_idx) < abs(best_old_idx - new_idx): # type: ignore
+                    best_match = j
+                    best_old_idx = old_idx
+        
+        if best_match is not None:
+            old_idx = best_old_idx
+            if old_idx == new_idx:
+                patches.append((old_idx, new_idx))  # Same position, patch it
+            else:
+                moves.append((old_idx, new_idx))    # Different position, move it
+            
+            remaining_old.pop(best_match)
+            remaining_new.remove((new_idx, new_child))
+            used_old_indices.add(old_idx)
+            used_new_indices.add(new_idx)
+    
+    # Step 4: Remaining items are creates and deletes
+    for new_idx, new_child in remaining_new:
+        creates.append((new_idx, new_child))
     
     for old_idx, _ in remaining_old:
         deletes.append(old_idx)
     
-    return moves, creates, deletes
+    return moves, creates, deletes, patches
 
 def _mount_portal(vnode):
     host = vnode.host
@@ -306,14 +349,15 @@ def patch(parent, old_v, new_v, index=0):
                 widget.insert(tk.END, item)
         
         return new_v
-
-    old_kids, new_kids = old_v.children, new_v.children
     
+    old_kids, new_kids = old_v.children, new_v.children
+	    
     if not old_kids and not new_kids:
         return new_v
-    
+
     current_widgets = widget.winfo_children() if widget and widget.winfo_exists() else []
-    
+
+    # Simple case: same structure, just patch each child
     if (len(old_kids) == len(new_kids) and 
         all(same_node(old_kids[i], new_kids[i]) for i in range(len(old_kids)))):
         
@@ -323,54 +367,45 @@ def patch(parent, old_v, new_v, index=0):
             else:
                 create_element(new_kids[i], widget)
         return new_v
-    
-    moves, creates, deletes = find_child_mapping(old_kids, new_kids)
-    
+
+    # Complex case: use the improved mapping
+    moves, creates, deletes, patches = find_child_mapping(old_kids, new_kids)
+    print("Moves:", moves)
+    print("Creates:", creates)
+    print("Deletes:", deletes)
+    print("Patches:", patches)
+
+    # Step 1: Patch children in place first (most efficient)
+    for old_idx, new_idx in patches:
+        if old_idx < len(current_widgets) and current_widgets[old_idx].winfo_exists():
+            patch(widget, old_kids[old_idx], new_kids[new_idx], old_idx)
+
+    # Step 2: Delete elements that are no longer needed
     for old_idx in sorted(deletes, reverse=True):
         if old_idx < len(current_widgets) and current_widgets[old_idx].winfo_exists():
             current_widgets[old_idx].destroy()
-    
+
+    # Refresh widget list after deletions
     current_widgets = widget.winfo_children() if widget and widget.winfo_exists() else []
-    
+
+    # Step 3: Handle moves (patch and reposition)
     widget_mapping = {}
     for i, w in enumerate(current_widgets):
         if i < len(old_kids):
             widget_mapping[i] = w
-    
-    final_widgets: list = [None] * len(new_kids)
-    
-    for i, new_child in enumerate(new_kids):
-        moved_from = None
-        for old_idx, new_idx in moves:
-            if new_idx == i:
-                moved_from = old_idx
-                break
-        
-        if moved_from is not None:
-            old_widget = widget_mapping.get(moved_from)
-            if old_widget and old_widget.winfo_exists():
-                patch(widget, old_kids[moved_from], new_child, moved_from)
-                final_widgets[i] = old_widget
-            else:
-                final_widgets[i] = create_element(new_child, widget)
-        else:
-            found_existing = False
-            if i < len(old_kids):
-                staying = True
-                for old_idx, new_idx in moves:
-                    if old_idx == i:
-                        staying = False
-                        break
-                if staying and i not in deletes and same_node(old_kids[i], new_child):
-                    old_widget = widget_mapping.get(i)
-                    if old_widget and old_widget.winfo_exists():
-                        patch(widget, old_kids[i], new_child, i)
-                        final_widgets[i] = old_widget
-                        found_existing = True
-            
-            if not found_existing:
-                final_widgets[i] = create_element(new_child, widget)
-    
+
+    for old_idx, new_idx in moves:
+        old_widget = widget_mapping.get(old_idx)
+        if old_widget and old_widget.winfo_exists():
+            patch(widget, old_kids[old_idx], new_kids[new_idx], old_idx)
+            # Note: Actual repositioning happens in the final pack step
+
+    # Step 4: Create new elements
+    for new_idx, new_child in creates:
+        create_element(new_child, widget)
+
+    # Step 5: Reorder all widgets to match new structure
+    final_widgets = widget.winfo_children() if widget and widget.winfo_exists() else []
     for w in final_widgets:
         if w and w.winfo_exists():
             w.pack_forget()
