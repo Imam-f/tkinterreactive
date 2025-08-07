@@ -1,6 +1,9 @@
+# vdom.py - Refactored with better host detection and component awareness
+
 import tkinter as tk
 from tkinter import ttk
 from weakref import WeakKeyDictionary
+import time
 
 MOUNTED = WeakKeyDictionary()
 
@@ -22,8 +25,14 @@ class PortalVNode:
         self.child = child
         self.key = key
 
+class ComponentVNode:
+    """Special VNode for child components"""
+    def __init__(self, render_fn, key=None):
+        self.render_fn = render_fn
+        self.key = key
+
 def h(tag, props=None, children=None, key=None, memo_key=None):
-    if isinstance(children, (str, TextVNode, ElementVNode, PortalVNode)):
+    if isinstance(children, (str, TextVNode, ElementVNode, PortalVNode, ComponentVNode)):
         children = [children]
     elif children is None:
         children = []
@@ -31,6 +40,9 @@ def h(tag, props=None, children=None, key=None, memo_key=None):
 
 def Portal(host, child, key=None):
     return PortalVNode(host, child, key)
+
+def Component(render_fn, key=None):
+    return ComponentVNode(render_fn, key)
 
 TAG_MAP = {
     "div": ttk.Frame,
@@ -67,30 +79,57 @@ def set_prop(w, name, value):
         except Exception:
             pass
 
+def is_real_widget(host):
+    """Check if host is a real tkinter widget vs a collection"""
+    return hasattr(host, 'winfo_exists') and callable(host.winfo_exists)
+
 def create_element(vnode, parent):
     if isinstance(vnode, str):
         lbl = ttk.Label(parent, text=vnode)
         lbl.pack()
+        # Store vnode reference for patching
+        setattr(lbl, '_vnode', TextVNode(vnode))
         return lbl
+    
     if isinstance(vnode, TextVNode):
         lbl = ttk.Label(parent, text=vnode.text)
         lbl.pack()
+        setattr(lbl, '_vnode', vnode)
         return lbl
+    
     if isinstance(vnode, PortalVNode):
         anchor = ttk.Frame(parent)
         anchor.pack()
+        setattr(anchor, '_vnode', vnode)
         _mount_portal(vnode)
         return anchor
+    
+    if isinstance(vnode, ComponentVNode):
+        # Create a container for the component
+        container = ttk.Frame(parent)
+        container.pack()
+        
+        # Mount the component in the container
+        component_vdom = vnode.render_fn()
+        child_widget = create_element(component_vdom, container)
+        
+        setattr(container, '_vnode', vnode)
+        setattr(container, '_child_widget', child_widget)
+        return container
 
     cls = TAG_MAP.get(vnode.tag, ttk.Frame)
     w = cls(parent)
+    setattr(w, '_vnode', vnode)
+    
     if vnode.tag == "h2":
         try:
             w.config(font=("Cascadia Mono", 16, "bold"))
         except Exception:
             pass
+    
     for k, v in vnode.props.items():
         set_prop(w, k, v)
+    
     w.pack()
 
     if isinstance(w, tk.Listbox):
@@ -100,6 +139,7 @@ def create_element(vnode, parent):
     else:
         for c in vnode.children:
             create_element(c, w)
+    
     return w
 
 def same_node(a, b):
@@ -111,9 +151,12 @@ def same_node(a, b):
         return True
     if isinstance(a, PortalVNode):
         return a.key is not None and a.key == b.key
-    if a.key is not None or b.key is not None:
-        return a.key == b.key and a.tag == b.tag
-    return a.tag == b.tag
+    if isinstance(a, ComponentVNode):
+        return a.key is not None and a.key == b.key
+    if hasattr(a, 'key') and hasattr(b, 'key'):
+        if a.key is not None or b.key is not None:
+            return a.key == b.key and getattr(a, 'tag', None) == getattr(b, 'tag', None)
+    return getattr(a, 'tag', None) == getattr(b, 'tag', None)
 
 def nodes_equal(a, b):
     if type(a) is not type(b):
@@ -129,6 +172,9 @@ def nodes_equal(a, b):
         return (a.key == b.key and 
                 a.host == b.host and 
                 nodes_equal(a.child, b.child))
+    
+    if isinstance(a, ComponentVNode):
+        return a.key == b.key and a.render_fn == b.render_fn
     
     if isinstance(a, ElementVNode):
         if a.memo_key and b.memo_key and a.memo_key == b.memo_key:
@@ -148,108 +194,187 @@ def nodes_equal(a, b):
     
     return False
 
-def find_child_mapping(old_children, new_children):
-    old_keyed = {}
-    new_keyed = {}
+def find_widget_for_vnode(parent, vnode, index=None):
+    """Find the widget that corresponds to a given vnode"""
+    if not parent or not hasattr(parent, 'winfo_children'):
+        return None
     
-    # Build keyed maps
-    for i, child in enumerate(old_children):
-        if hasattr(child, 'key') and child.key is not None:
-            old_keyed[child.key] = (i, child)
+    children = parent.winfo_children()
     
-    for i, child in enumerate(new_children):
-        if hasattr(child, 'key') and child.key is not None:
-            new_keyed[child.key] = (i, child)
+    if index is not None and index < len(children):
+        widget = children[index]
+        if widget.winfo_exists():
+            stored_vnode = getattr(widget, '_vnode', None)
+            if stored_vnode and same_node(stored_vnode, vnode):
+                return widget
     
-    moves = []
-    creates = []
-    deletes = []
-    patches = []  # New: children that can be patched in place
-    used_old_indices = set()
-    used_new_indices = set()
-    
-    # Step 1: Handle exact position matches first (patches in place)
-    min_len = min(len(old_children), len(new_children))
-    for i in range(min_len):
-        old_child = old_children[i]
-        new_child = new_children[i]
-        
-        # Skip if either is keyed (handle them separately)
-        old_is_keyed = hasattr(old_child, 'key') and old_child.key is not None
-        new_is_keyed = hasattr(new_child, 'key') and new_child.key is not None
-        
-        if old_is_keyed or new_is_keyed:
+    # Fallback: search by key or position
+    for i, widget in enumerate(children):
+        if not widget.winfo_exists():
             continue
-            
-        # If they can be the same node, patch in place
-        if same_node(old_child, new_child):
-            patches.append((i, i))  # (old_index, new_index)
-            used_old_indices.add(i)
-            used_new_indices.add(i)
+        stored_vnode = getattr(widget, '_vnode', None)
+        if stored_vnode and same_node(stored_vnode, vnode):
+            return widget
     
-    # Step 2: Handle keyed elements (moves/creates)
-    for new_idx, new_child in enumerate(new_children):
-        if new_idx in used_new_indices:
-            continue
+    return None
+
+def patch_widget(widget, old_vnode, new_vnode):
+    """Patch a single widget with new vnode data"""
+    if not widget or not widget.winfo_exists():
+        return False
+    
+    # Update stored vnode reference
+    setattr(widget, '_vnode', new_vnode)
+    
+    # Handle different node types
+    if isinstance(new_vnode, (str, TextVNode)):
+        new_text = new_vnode.text if isinstance(new_vnode, TextVNode) else new_vnode
+        old_text = old_vnode.text if isinstance(old_vnode, TextVNode) else old_vnode
+        if new_text != old_text:
+            set_prop(widget, "text", new_text)
+        return True
+    
+    if isinstance(new_vnode, PortalVNode):
+        _mount_portal(new_vnode)
+        return True
+    
+    if isinstance(new_vnode, ComponentVNode):
+        # Re-render component
+        component_vdom = new_vnode.render_fn()
+        child_widget = getattr(widget, '_child_widget', None)
+        
+        if child_widget and child_widget.winfo_exists():
+            # Patch existing child
+            old_child_vnode = getattr(child_widget, '_vnode', None)
+            patch_recursive(widget, old_child_vnode, component_vdom, 0)
+        else:
+            # Create new child
+            for child in widget.winfo_children():
+                child.destroy()
+            new_child = create_element(component_vdom, widget)
+            setattr(widget, '_child_widget', new_child)
+        return True
+    
+    if isinstance(new_vnode, ElementVNode):
+        # Update properties
+        old_props = getattr(old_vnode, 'props', {})
+        new_props = new_vnode.props
+        
+        for key in set(old_props.keys()) | set(new_props.keys()):
+            if old_props.get(key) != new_props.get(key):
+                set_prop(widget, key, new_props.get(key))
+        
+        # Handle special cases
+        if isinstance(widget, tk.Listbox):
+            # Update listbox items
+            old_items = []
+            new_items = []
             
-        if hasattr(new_child, 'key') and new_child.key is not None:
-            if new_child.key in old_keyed:
-                old_idx, old_child = old_keyed[new_child.key]
-                if old_idx != new_idx:
-                    moves.append((old_idx, new_idx))
+            for child in getattr(old_vnode, 'children', []):
+                if isinstance(child, str):
+                    old_items.append(child)
+                elif isinstance(child, TextVNode):
+                    old_items.append(child.text)
                 else:
-                    patches.append((old_idx, new_idx))  # Same position, patch it
-                used_old_indices.add(old_idx)
-                used_new_indices.add(new_idx)
-            else:
-                creates.append((new_idx, new_child))
-                used_new_indices.add(new_idx)
-    
-    # Step 3: Handle remaining unkeyed children
-    remaining_old = [(i, child) for i, child in enumerate(old_children) 
-                     if i not in used_old_indices]
-    remaining_new = [(i, child) for i, child in enumerate(new_children)
-                     if i not in used_new_indices]
-    
-    # Try to match remaining children by same_node
-    for new_idx, new_child in remaining_new[:]:  # Copy list since we'll modify it
-        best_match = None
-        best_old_idx = None
-        
-        for j, (old_idx, old_child) in enumerate(remaining_old):
-            if same_node(old_child, new_child):
-                # Prefer matches that are closer to the target position
-                if best_match is None:
-                    best_match = j
-                    best_old_idx = old_idx
-                elif abs(old_idx - new_idx) < abs(best_old_idx - new_idx): # type: ignore
-                    best_match = j
-                    best_old_idx = old_idx
-        
-        if best_match is not None:
-            old_idx = best_old_idx
-            if old_idx == new_idx:
-                patches.append((old_idx, new_idx))  # Same position, patch it
-            else:
-                moves.append((old_idx, new_idx))    # Different position, move it
+                    old_items.append(str(child))
             
-            remaining_old.pop(best_match)
-            remaining_new.remove((new_idx, new_child))
-            used_old_indices.add(old_idx)
-            used_new_indices.add(new_idx)
+            for child in new_vnode.children:
+                if isinstance(child, str):
+                    new_items.append(child)
+                elif isinstance(child, TextVNode):
+                    new_items.append(child.text)
+                else:
+                    new_items.append(str(child))
+            
+            if old_items != new_items:
+                widget.delete(0, tk.END)
+                for item in new_items:
+                    widget.insert(tk.END, item)
+        else:
+            # Patch children recursively
+            old_children = getattr(old_vnode, 'children', [])
+            new_children = new_vnode.children
+            patch_children(widget, old_children, new_children)
+        
+        return True
     
-    # Step 4: Remaining items are creates and deletes
-    for new_idx, new_child in remaining_new:
-        creates.append((new_idx, new_child))
+    return False
+
+def patch_children(parent_widget, old_children, new_children):
+    """Patch child widgets based on old and new child vnodes"""
+    if not parent_widget or not parent_widget.winfo_exists():
+        return
     
-    for old_idx, _ in remaining_old:
-        deletes.append(old_idx)
+    current_widgets = parent_widget.winfo_children()
     
-    return moves, creates, deletes, patches
+    # Simple case: same length, try to patch in place
+    if len(old_children) == len(new_children):
+        can_patch_all = True
+        for i, (old_child, new_child) in enumerate(zip(old_children, new_children)):
+            if not same_node(old_child, new_child):
+                can_patch_all = False
+                break
+        
+        if can_patch_all:
+            for i, (old_child, new_child) in enumerate(zip(old_children, new_children)):
+                if i < len(current_widgets):
+                    widget = current_widgets[i]
+                    if widget.winfo_exists():
+                        patch_recursive(parent_widget, old_child, new_child, i)
+            return
+    
+    # Complex case: rebuild children
+    # For simplicity, destroy all children and recreate
+    for widget in current_widgets:
+        if widget.winfo_exists():
+            widget.destroy()
+    
+    for child_vnode in new_children:
+        create_element(child_vnode, parent_widget)
+
+def patch_recursive(parent, old_vnode, new_vnode, index=0):
+    """Recursively patch a vnode at a specific index"""
+    if parent is None or not is_real_widget(parent):
+        return new_vnode
+    
+    if not parent.winfo_exists():
+        return new_vnode
+    
+    # If vnodes are equal, no work needed
+    if nodes_equal(old_vnode, new_vnode):
+        return new_vnode
+    
+    # Find the target widget
+    widget = find_widget_for_vnode(parent, old_vnode or new_vnode, index)
+    
+    if old_vnode is None:
+        # Create new element
+        create_element(new_vnode, parent)
+        return new_vnode
+    
+    if widget is None or not widget.winfo_exists():
+        # Widget not found, create new one
+        create_element(new_vnode, parent)
+        return new_vnode
+    
+    if not same_node(old_vnode, new_vnode):
+        # Different node types, replace completely
+        widget.destroy()
+        create_element(new_vnode, parent)
+        return new_vnode
+    
+    # Patch existing widget
+    if patch_widget(widget, old_vnode, new_vnode):
+        return new_vnode
+    else:
+        # Fallback: replace widget
+        widget.destroy()
+        create_element(new_vnode, parent)
+        return new_vnode
 
 def _mount_portal(vnode):
     host = vnode.host
-    if host is None:
+    if host is None or not is_real_widget(host):
         return
     
     rec = MOUNTED.get(host)
@@ -259,194 +384,70 @@ def _mount_portal(vnode):
         w = create_element(vnode.child, host)
         MOUNTED[host] = {"widget": w, "vnode": vnode.child}
     else:
-        rec["vnode"] = patch(host, rec["vnode"], vnode.child)
+        old_vnode = rec["vnode"]
+        rec["vnode"] = patch_recursive(host, old_vnode, vnode.child)
         MOUNTED[host] = rec
 
-def patch(parent, old_v, new_v, index=0):
-    if parent is None:
-        return new_v
-
-    children = parent.winfo_children()
-    target = children[index] if index < len(children) else None
-
-    if old_v is None:
-        create_element(new_v, parent)
-        return new_v
-
-    if nodes_equal(old_v, new_v):
-        return new_v
-
-    if (isinstance(old_v, str) or isinstance(new_v, str) or 
-        isinstance(old_v, TextVNode) or isinstance(new_v, TextVNode)):
-        old_t = old_v.text if isinstance(old_v, TextVNode) else old_v
-        new_t = new_v.text if isinstance(new_v, TextVNode) else new_v
-        if old_t != new_t:
-            if target and target.winfo_exists():
-                set_prop(target, "text", new_t)
-            else:
-                create_element(new_v, parent)
-        return new_v
-
-    if isinstance(old_v, PortalVNode) or isinstance(new_v, PortalVNode):
-        if not same_node(old_v, new_v):
-            if target and target.winfo_exists():
-                target.destroy()
-            create_element(new_v, parent)
-            return new_v
-        _mount_portal(new_v)
-        return new_v
-
-    if not same_node(old_v, new_v):
-        if target and target.winfo_exists():
-            target.destroy()
-        create_element(new_v, parent)
-        return new_v
-
-    if (old_v.memo_key and new_v.memo_key and 
-        old_v.memo_key == new_v.memo_key):
-        return new_v
-
-    widget = target
-    if widget is None or not widget.winfo_exists():
-        create_element(new_v, parent)
-        return new_v
-
-    old_p, new_p = old_v.props, new_v.props
-    if old_p != new_p:
-        for k in set(old_p) | set(new_p):
-            if old_p.get(k) != new_p.get(k):
-                set_prop(widget, k, new_p.get(k))
-
-    if isinstance(widget, tk.Listbox):
-        old_items = []
-        new_items = []
-        
-        for c in old_v.children:
-            if isinstance(c, str):
-                old_items.append(c)
-            elif isinstance(c, TextVNode):
-                old_items.append(c.text)
-            elif hasattr(c, 'children') and c.children:
-                first_child = c.children[0] if c.children else ""
-                old_items.append(first_child if isinstance(first_child, str) else str(first_child))
-            else:
-                old_items.append(str(c))
-        
-        for c in new_v.children:
-            if isinstance(c, str):
-                new_items.append(c)
-            elif isinstance(c, TextVNode):
-                new_items.append(c.text)
-            elif hasattr(c, 'children') and c.children:
-                first_child = c.children[0] if c.children else ""
-                new_items.append(first_child if isinstance(first_child, str) else str(first_child))
-            else:
-                new_items.append(str(c))
-        
-        if old_items != new_items:
-            widget.delete(0, tk.END)
-            for item in new_items:
-                widget.insert(tk.END, item)
-        
-        return new_v
+class ComponentMount:
+    """Enhanced mounting system with component awareness"""
+    def __init__(self, host, render_fn):
+        self.host = host
+        self.render_fn = render_fn
+        self.old_vnode = None
+        self.is_real_host = is_real_widget(host)
+        self.unmounted = False
     
-    old_kids, new_kids = old_v.children, new_v.children
-	    
-    if not old_kids and not new_kids:
-        return new_v
-
-    current_widgets = widget.winfo_children() if widget and widget.winfo_exists() else []
-
-    # Simple case: same structure, just patch each child
-    if (len(old_kids) == len(new_kids) and 
-        all(same_node(old_kids[i], new_kids[i]) for i in range(len(old_kids)))):
+    def update(self):
+        if self.unmounted:
+            return
         
-        for i in range(len(new_kids)):
-            if i < len(current_widgets) and current_widgets[i].winfo_exists():
-                patch(widget, old_kids[i], new_kids[i], i)
-            else:
-                create_element(new_kids[i], widget)
-        return new_v
+        try:
+            new_vnode = self.render_fn()
+        except Exception as e:
+            print(f"Error in render function: {e}")
+            return
+        
+        if self.is_real_host:
+            # Real widget mounting
+            if not self.host.winfo_exists():
+                self.unmounted = True
+                return
+            
+            self.old_vnode = patch_recursive(self.host, self.old_vnode, new_vnode)
+        else:
+            # Virtual mounting (list-based)
+            if isinstance(self.host, list):
+                self.host.clear()
+                self.host.append(new_vnode)
+                self.old_vnode = new_vnode
+    
+    def unmount(self):
+        if self.unmounted:
+            return
+        
+        self.unmounted = True
+        
+        if self.is_real_host:
+            try:
+                if self.host.winfo_exists():
+                    for child in self.host.winfo_children():
+                        child.destroy()
+            except Exception:
+                pass
+        else:
+            if isinstance(self.host, list):
+                self.host.clear()
+        
+        self.old_vnode = None
 
-    # Complex case: use the improved mapping
-    moves, creates, deletes, patches = find_child_mapping(old_kids, new_kids)
-    print("Moves:", moves)
-    print("Creates:", creates)
-    print("Deletes:", deletes)
-    print("Patches:", patches)
-
-    # Step 1: Patch children in place first (most efficient)
-    for old_idx, new_idx in patches:
-        if old_idx < len(current_widgets) and current_widgets[old_idx].winfo_exists():
-            patch(widget, old_kids[old_idx], new_kids[new_idx], old_idx)
-
-    # Step 2: Delete elements that are no longer needed
-    for old_idx in sorted(deletes, reverse=True):
-        if old_idx < len(current_widgets) and current_widgets[old_idx].winfo_exists():
-            current_widgets[old_idx].destroy()
-
-    # Refresh widget list after deletions
-    current_widgets = widget.winfo_children() if widget and widget.winfo_exists() else []
-
-    # Step 3: Handle moves (patch and reposition)
-    widget_mapping = {}
-    for i, w in enumerate(current_widgets):
-        if i < len(old_kids):
-            widget_mapping[i] = w
-
-    for old_idx, new_idx in moves:
-        old_widget = widget_mapping.get(old_idx)
-        if old_widget and old_widget.winfo_exists():
-            patch(widget, old_kids[old_idx], new_kids[new_idx], old_idx)
-            # Note: Actual repositioning happens in the final pack step
-
-    # Step 4: Create new elements
-    for new_idx, new_child in creates:
-        create_element(new_child, widget)
-
-    # Step 5: Reorder all widgets to match new structure
-    final_widgets = widget.winfo_children() if widget and widget.winfo_exists() else []
-    for w in final_widgets:
-        if w and w.winfo_exists():
-            w.pack_forget()
-            w.pack()
-
-    return new_v
-
-# vdom.py - Modified mount_vdom function
 def mount_vdom(host, render_fn):
-    old = [None]
+    """Enhanced mount_vdom with better host detection"""
+    mount = ComponentMount(host, render_fn)
     
     def update():
-        new_tree = render_fn()
-        
-        # Check if host is a child list (for collecting VDOMs)
-        if isinstance(host, list):
-            # Clear the list and append new VDOM
-            host.clear()
-            host.append(new_tree)
-            return
-        
-        # Normal rendering to actual widget
-        # timer = time.perf_counter()
-        old[0] = patch(host, old[0], new_tree)
-        # print("patch time = ", time.perf_counter() - timer)
+        mount.update()
     
     def unmount():
-        if isinstance(host, list):
-            host.clear()
-            old[0] = None
-            return
-            
-        try:
-            is_n_closed = host.winfo_exists()
-        except Exception:
-            is_n_closed = False
-        if not is_n_closed:
-            old[0] = None
-            return
-        for c in host.winfo_children():
-            c.destroy()
-        old[0] = None
+        mount.unmount()
     
     return update, unmount

@@ -1,74 +1,75 @@
-# multi_view_with_portal.py - Modified child components
-from vdom import h, Portal, mount_vdom
+# multi_view_with_portal.py - Refactored with self-contained components
+
+from vdom import h, Portal, mount_vdom, Component
 from scheduler import Scheduler
 from memo import create_memo, memo_key_from
 from typing import Callable
 
+class ComponentState:
+    """Simple state management for components"""
+    def __init__(self, initial_state=None):
+        self.state = initial_state or {}
+        self.listeners = []
+    
+    def update(self, updates):
+        self.state.update(updates)
+        for listener in self.listeners:
+            listener()
+    
+    def subscribe(self, listener):
+        self.listeners.append(listener)
+    
+    def unsubscribe(self, listener):
+        if listener in self.listeners:
+            self.listeners.remove(listener)
 
-def TabNavigation(vdom_ref, request_render_immediate: Callable):
-    """Tab navigation component that populates vdom_ref"""
-    state_holder = {}
-
-    def on_switch(k):
-        if state_holder["state"]["active"] != k:
-            state_holder["state"]["active"] = k
-            request_render_immediate()
-
-    def render(current_state):
-        mk = memo_key_from([current_state["active"]])
-        vdom = h(
+def TabNavigation(parent_state, on_change):
+    """Self-contained tab navigation component"""
+    def render():
+        active = parent_state.get("active", "counter")
+        mk = memo_key_from([active])
+        
+        def switch_to(tab):
+            def handler():
+                on_change({"active": tab})
+            return handler
+        
+        return h(
             "div",
             {"class": "tabs"},
             [
-                h(
-                    "button",
-                    {"text": "Counter", "command": lambda: on_switch("counter")},
-                ),
-                h(
-                    "button",
-                    {"text": "List", "command": lambda: on_switch("list")},
-                ),
+                h("button", {
+                    "text": "Counter", 
+                    "command": switch_to("counter")
+                }),
+                h("button", {
+                    "text": "List", 
+                    "command": switch_to("list")
+                }),
             ],
             memo_key=mk,
         )
-        vdom_ref.clear()
-        vdom_ref.append(vdom)
-        return vdom
+    
+    return render
 
-    def render_closure():
-        if "state" in state_holder:
-            return render(state_holder["state"])
-        return h("div")
-
-    update, unmount = mount_vdom(vdom_ref, render_closure)
-
-    try:
-        parent_state = yield
-        while True:
-            state_holder["state"] = parent_state
-            update()
-            parent_state = yield
-    except GeneratorExit:
-        unmount()
-
-
-def CounterView(vdom_ref, request_render_immediate: Callable):
-    """Counter component that populates vdom_ref"""
-    state_holder = {}
-
-    def on_inc():
-        state_holder["state"]["counter"]["count"] += 1
-        request_render_immediate()
-
-    def on_dec():
-        state_holder["state"]["counter"]["count"] -= 1
-        request_render_immediate()
-
-    def render(current_state):
-        parent_tick = current_state["parent_tick"]
-        count = current_state["counter"]["count"]
+def CounterView(parent_state, on_change):
+    """Self-contained counter component"""
+    def render():
+        parent_tick = parent_state.get("parent_tick", 0)
+        count = parent_state.get("counter", {}).get("count", 0)
         mk = memo_key_from(["counter", parent_tick, count])
-        vdom = h(
+        
+        def on_inc():
+            counter = parent_state.get("counter", {})
+            counter["count"] = counter.get("count", 0) + 1
+            on_change({"counter": counter})
+        
+        def on_dec():
+            counter = parent_state.get("counter", {})
+            counter["count"] = counter.get("count", 0) - 1
+            on_change({"counter": counter})
+        
+        return h(
             "div",
             {"class": "view counter"},
             [
@@ -79,330 +80,181 @@ def CounterView(vdom_ref, request_render_immediate: Callable):
             ],
             memo_key=mk,
         )
-        vdom_ref.clear()
-        vdom_ref.append(vdom)
-        return vdom
+    
+    return render
 
-    def render_closure():
-        if "state" in state_holder:
-            return render(state_holder["state"])
-        return h("div")
-
-    update, unmount = mount_vdom(vdom_ref, render_closure)
-
-    try:
-        parent_state = yield
-        while True:
-            state_holder["state"] = parent_state
-            update()
-            parent_state = yield
-    except GeneratorExit:
-        unmount()
-
-
-def ListFilter(vdom_ref, request_render_immediate: Callable):
-    """List filter component that populates vdom_ref"""
-    state_holder = {}
-
-    def on_filter(e):
-        val = e.widget.get()
-        state_holder["state"]["list"]["filter"] = val
-        request_render_immediate()
-
-    def on_add():
-        current_state = state_holder["state"]
-        parent_tick = current_state["parent_tick"]
-        new_item = f"Item {len(current_state['list']['items']) + 1} @t{parent_tick}"
-        current_state["list"]["items"] = current_state["list"]["items"] + [new_item]
-        request_render_immediate()
-
-    def render(current_state):
-        filt = current_state["list"]["filter"]
-        mk = memo_key_from(["filter", filt])
-        vdom = h(
-            "div",
-            {"class": "list-controls"},
-            [
-                h("input", {"value": filt, "on_input": on_filter}),
-                h("button", {"text": "Add", "command": on_add}),
-            ],
-            memo_key=mk,
-        )
-        vdom_ref.clear()
-        vdom_ref.append(vdom)
-        return vdom
-
-    def render_closure():
-        if "state" in state_holder:
-            return render(state_holder["state"])
-        return h("div")
-
-    update, unmount = mount_vdom(vdom_ref, render_closure)
-
-    try:
-        parent_state = yield
-        while True:
-            state_holder["state"] = parent_state
-            update()
-            parent_state = yield
-    except GeneratorExit:
-        unmount()
-
-
-def ListView(vdom_ref, request_render_immediate: Callable):
-    """List view component that populates vdom_ref"""
+def ListView(parent_state, on_change):
+    """Self-contained list view component"""
     memo_filtered = create_memo()
-    state_holder = {}
-
-    filter_vdom_ref = []
-    child_filter = ListFilter(filter_vdom_ref, request_render_immediate)
-    next(child_filter)
-
-    def get_filtered(current_state):
-        items = tuple(current_state["list"]["items"])
-        filt = current_state["list"]["filter"]
+    
+    def get_filtered():
+        items = tuple(parent_state.get("list", {}).get("items", []))
+        filt = parent_state.get("list", {}).get("filter", "")
         return memo_filtered(
-            lambda: [x for x in items if filt.lower() in x.lower()], [items, filt]
+            lambda: [x for x in items if filt.lower() in x.lower()],
+            [items, filt]
         )
-
-    def render(current_state):
-        filt = current_state["list"]["filter"]
-        items = current_state["list"]["items"]
+    
+    def render():
+        list_state = parent_state.get("list", {})
+        filt = list_state.get("filter", "")
+        items = list_state.get("items", [])
         mk = memo_key_from(["list", filt, len(items)])
-        filtered_items = get_filtered(current_state)
-
-        try:
-            child_filter.send(current_state)
-        except StopIteration:
-            pass
-
-        vdom = h(
+        
+        def on_filter(e):
+            val = e.widget.get()
+            new_list_state = list_state.copy()
+            new_list_state["filter"] = val
+            on_change({"list": new_list_state})
+        
+        def on_add():
+            parent_tick = parent_state.get("parent_tick", 0)
+            new_item = f"Item {len(items) + 1} @t{parent_tick}"
+            new_list_state = list_state.copy()
+            new_list_state["items"] = items + [new_item]
+            on_change({"list": new_list_state})
+        
+        filtered_items = get_filtered()
+        
+        return h(
             "div",
             {"class": "view list"},
             [
-                filter_vdom_ref[0] if filter_vdom_ref else h("div"),
+                h("div", {"class": "list-controls"}, [
+                    h("input", {"value": filt, "on_input": on_filter}),
+                    h("button", {"text": "Add", "command": on_add}),
+                ]),
                 h("ul", {}, filtered_items, memo_key=mk),
             ],
             memo_key=mk,
         )
-        vdom_ref.clear()
-        vdom_ref.append(vdom)
-        return vdom
+    
+    return render
 
-    def render_closure():
-        if "state" in state_holder:
-            return render(state_holder["state"])
-        return h("div")
-
-    update, unmount = mount_vdom(vdom_ref, render_closure)
-
-    try:
-        parent_state = yield
-        while True:
-            state_holder["state"] = parent_state
-            update()
-            parent_state = yield
-    except GeneratorExit:
-        unmount()
-        child_filter.close()
-
-
-def StatusBar(vdom_ref, portal_host):
-    """Status bar component that populates vdom_ref"""
-    state_holder = {}
-
-    def render(current_state):
-        status = current_state["status"]
+def StatusBar(parent_state, portal_host):
+    """Status bar component using portal"""
+    def render():
+        status = parent_state.get("status", {})
         status_text = (
-            f"Active: {status['active']} | "
-            f"Tick: {status['parent_tick']} | "
-            f"Count: {status['counter_count']} | "
-            f"Items: {status['items_count']}"
+            f"Active: {status.get('active', 'none')} | "
+            f"Tick: {status.get('parent_tick', 0)} | "
+            f"Count: {status.get('counter_count', 0)} | "
+            f"Items: {status.get('items_count', 0)}"
         )
         status_content = h(
             "div", {"class": "status"}, [h("span", {"text": status_text})]
         )
-        vdom = Portal(portal_host, status_content, key=status_text)
-        vdom_ref.clear()
-        vdom_ref.append(vdom)
-        return vdom
+        return Portal(portal_host, status_content, key="status")
+    
+    return render
 
-    def render_closure():
-        if "state" in state_holder:
-            return render(state_holder["state"])
-        return h("div")
-
-    update, unmount = mount_vdom(vdom_ref, render_closure)
-
-    try:
-        parent_state = yield
-        while True:
-            state_holder["state"] = parent_state
-            update()
-            parent_state = yield
-    except GeneratorExit:
-        unmount()
-
-
-def Header(vdom_ref):
-    """Header component that populates vdom_ref"""
+def Header(parent_state):
+    """Header component"""
     memo_header = create_memo()
-    state_holder = {}
-
-    def render(current_state):
-        title = current_state["title"]
-        active = current_state["active"]
-        parent_tick = current_state["parent_tick"]
+    
+    def render():
+        title = parent_state.get("title", "App")
+        active = parent_state.get("active", "none")
+        parent_tick = parent_state.get("parent_tick", 0)
+        
         header_text = memo_header(
             lambda: f"{title} – {active} (t{parent_tick})",
             [title, active, parent_tick],
         )
-        vdom = h("h2", {"text": header_text})
-        vdom_ref.clear()
-        vdom_ref.append(vdom)
-        return vdom
-
-    def render_closure():
-        if "state" in state_holder:
-            return render(state_holder["state"])
-        return h("div")
-
-    update, unmount = mount_vdom(vdom_ref, render_closure)
-
-    try:
-        parent_state = yield
-        while True:
-            state_holder["state"] = parent_state
-            update()
-            parent_state = yield
-    except GeneratorExit:
-        unmount()
-
+        
+        return h("h2", {"text": header_text})
+    
+    return render
 
 def MultiViewWithPortal(args, host, portal_host):
+    """Main component with enhanced self-contained child management"""
     out = []
-
+    
     def push(evt):
         out.append(evt)
-
+    
     def flush():
         batch = out[:]
         out.clear()
         return batch
-
-    state = {
+    
+    # Application state
+    app_state = ComponentState({
         "active": "counter",
         "parent_tick": 0,
         "title": args["title"],
         "counter": {"count": 0},
         "list": {"items": [], "filter": ""},
-        "status": {
-            "active": "counter",
-            "parent_tick": 0,
-            "counter_count": 0,
-            "items_count": 0,
-        },
-    }
-
-    child_contexts = []
-
-    def init_child(component_factory, extra_args=None):
-        vdom_ref = []
-        init_args = [vdom_ref]
-        if extra_args:
-            init_args.extend(extra_args)
-
-        instance = component_factory(*init_args)
-        next(instance)
-
-        context = {
-            "id": component_factory.__name__,
-            "instance": instance,
-            "vdom_ref": vdom_ref,
+    })
+    
+    def update_status():
+        app_state.state["status"] = {
+            "active": app_state.state["active"],
+            "parent_tick": app_state.state["parent_tick"],
+            "counter_count": app_state.state["counter"]["count"],
+            "items_count": len(app_state.state["list"]["items"]),
         }
-        child_contexts.append(context)
-        return context
-
-    def request_immediate():
-        global pump
-        import sys
-
-        pump = sys.modules["__main__"].pump
-        app = pump.__closure__[0].cell_contents
-
-        host_parent = host.winfo_toplevel()
-        host_parent.after(1, lambda: app.send({"type": "immediate"}))
-
-    init_child(Header)
-    init_child(TabNavigation, extra_args=[request_immediate])
-    init_child(CounterView, extra_args=[request_immediate])
-    init_child(ListView, extra_args=[request_immediate])
-    init_child(StatusBar, extra_args=[portal_host])
-
-    def update_children():
-        state["status"]["active"] = state["active"]
-        state["status"]["parent_tick"] = state["parent_tick"]
-        state["status"]["counter_count"] = state["counter"]["count"]
-        state["status"]["items_count"] = len(state["list"]["items"])
-
-        for child in child_contexts:
-            child["instance"].send(state)
-
-    def get_child_vdom(component_id):
-        for child in child_contexts:
-            if child["id"] == component_id:
-                return child["vdom_ref"][0] if child["vdom_ref"] else h("div")
-        return h("div")
-
+    
+    def on_state_change(updates):
+        app_state.update(updates)
+        update_status()
+        if scheduler:
+            scheduler.request("high")  # Immediate update for user interactions
+    
+    # Create component renderers
+    header_render = Header(app_state.state)
+    tab_nav_render = TabNavigation(app_state.state, on_state_change)
+    counter_render = CounterView(app_state.state, on_state_change)
+    list_render = ListView(app_state.state, on_state_change)
+    status_render = StatusBar(app_state.state, portal_host)
+    
     def root_view():
-        if state["active"] == "counter":
-            current_view = get_child_vdom("CounterView")
-        else:
-            current_view = get_child_vdom("ListView")
-
+        current_view = (
+            counter_render() if app_state.state["active"] == "counter" 
+            else list_render()
+        )
+        
         return h(
             "section",
             {"class": "multi-view-with-portal"},
             [
-                get_child_vdom("Header"),
-                get_child_vdom("TabNavigation"),
+                header_render(),
+                tab_nav_render(),
                 current_view,
-                get_child_vdom("StatusBar"),
+                status_render(),
             ],
-            memo_key=memo_key_from(
-                [
-                    state["title"],
-                    state["active"],
-                    state["parent_tick"],
-                    state["counter"]["count"],
-                    len(state["list"]["items"]),
-                    state["list"]["filter"],
-                ]
-            ),
+            memo_key=memo_key_from([
+                app_state.state["title"],
+                app_state.state["active"],
+                app_state.state["parent_tick"],
+                app_state.state["counter"]["count"],
+                len(app_state.state["list"]["items"]),
+                app_state.state["list"]["filter"],
+            ])
         )
-
+    
     update, unmount = mount_vdom(host, root_view)
     scheduler = Scheduler(update, host.winfo_toplevel())
-
+    
     def request_render():
-        update_children()
-        scheduler.request()
-
+        update_status()
+        scheduler.request("low")  # Batched update for external changes
+    
     try:
         request_render()
         parent_msg = yield flush()
+        
         while True:
             if parent_msg and isinstance(parent_msg, dict):
                 if "tick" in parent_msg:
-                    state["parent_tick"] = parent_msg["tick"]
-                update_children()
-                update()
-
+                    app_state.update({"parent_tick": parent_msg["tick"]})
+                    scheduler.request("low")
+                elif parent_msg.get("type") == "immediate":
+                    update()
+            
             scheduler.flush()
             parent_msg = yield flush()
             scheduler.defer()
     finally:
         scheduler.cancel()
         unmount()
-        for child in child_contexts:
-            child["instance"].close()
