@@ -3,7 +3,6 @@
 import tkinter as tk
 from tkinter import ttk
 from weakref import WeakKeyDictionary
-import time
 
 MOUNTED = WeakKeyDictionary()
 

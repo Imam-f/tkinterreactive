@@ -38,7 +38,7 @@ def cleanup_component(component):
     """Clean up a component"""
     try:
         component.close()
-    except:
+    except Exception:
         pass
 
 def create_component_mount(host, render_fn, parent_container):
