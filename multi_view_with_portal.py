@@ -1,14 +1,11 @@
-# multi_view_with_portal.py - Components create their own hosts
-from vdom import h, Portal, mount_vdom
-from scheduler import Scheduler
+# multi_view_with_portal.py - User code using rtk framework
+import rtk
+from vdom import h, Portal
 from memo import create_memo, memo_key_from
-from tkinter import ttk
 
 def TabNavigation(parent_container):
-    """Standalone tab navigation app that creates its own host"""
-    # Create own host
-    host = ttk.Frame(parent_container)
-    host.pack(fill="x", pady=(0, 10))
+    """Tab navigation component using rtk framework"""
+    host = rtk.create_host(parent_container, {"fill": "x", "pady": (0, 10)})
     
     state = {
         "active": "counter"
@@ -18,8 +15,8 @@ def TabNavigation(parent_container):
         def handler():
             if state["active"] != tab:
                 state["active"] = tab
-                events.append({"type": "tab_changed", "active": tab})
-                scheduler.request("high")
+                lifecycle['events'].append({"type": "tab_changed", "active": tab})
+                lifecycle['scheduler'].request("high")
         return handler
     
     def render():
@@ -40,43 +37,31 @@ def TabNavigation(parent_container):
             memo_key=mk,
         )
     
-    update, unmount = mount_vdom(host, render)
-    scheduler = Scheduler(update, parent_container.winfo_toplevel())
-    events = []
+    def process_message(msg, state, update, scheduler, events):
+        if "active" in msg:
+            state["active"] = msg["active"]
+            update()
     
-    def flush_events():
-        batch = events[:]
-        events.clear()
-        return batch
-    
-    def cleanup():
-        scheduler.cancel()
-        unmount()
-        if host.winfo_exists():
-            host.destroy()
+    lifecycle = rtk.component_lifecycle(host, render, parent_container, state, process_message)
     
     try:
-        update()  # Initial render
-        parent_msg = yield flush_events()
+        lifecycle['update']()  # Initial render
+        parent_msg = yield lifecycle['flush_events']()
         
         while True:
             if parent_msg and isinstance(parent_msg, dict):
-                if "active" in parent_msg:
-                    state["active"] = parent_msg["active"]
-                    update()
+                lifecycle['process_message'](parent_msg)
             
-            scheduler.flush()
-            parent_msg = yield flush_events()
-            scheduler.defer()
+            lifecycle['scheduler'].flush()
+            parent_msg = yield lifecycle['flush_events']()
+            lifecycle['scheduler'].defer()
     finally:
-        cleanup()
+        lifecycle['cleanup']()
 
 
 def CounterView(parent_container):
-    """Standalone counter app that creates its own host"""
-    # Create own host
-    host = ttk.Frame(parent_container)
-    # Initially hidden - parent will show/hide as needed
+    """Counter component using rtk framework"""
+    host = rtk.create_host(parent_container)  # No initial pack - controlled by show/hide
     
     state = {
         "count": 0,
@@ -86,13 +71,13 @@ def CounterView(parent_container):
     
     def on_inc():
         state["count"] += 1
-        events.append({"type": "counter_changed", "count": state["count"]})
-        scheduler.request("high")
+        lifecycle['events'].append({"type": "counter_changed", "count": state["count"]})
+        lifecycle['scheduler'].request("high")
     
     def on_dec():
         state["count"] -= 1
-        events.append({"type": "counter_changed", "count": state["count"]})
-        scheduler.request("high")
+        lifecycle['events'].append({"type": "counter_changed", "count": state["count"]})
+        lifecycle['scheduler'].request("high")
     
     def render():
         mk = memo_key_from(["counter", state["parent_tick"], state["count"]])
@@ -118,47 +103,35 @@ def CounterView(parent_container):
             state["visible"] = False
             host.pack_forget()
     
-    update, unmount = mount_vdom(host, render)
-    scheduler = Scheduler(update, parent_container.winfo_toplevel())
-    events = []
+    def process_message(msg, state, update, scheduler, events):
+        if "parent_tick" in msg:
+            state["parent_tick"] = msg["parent_tick"]
+            update()
+        if "show" in msg and msg["show"]:
+            show()
+        if "hide" in msg and msg["hide"]:
+            hide()
     
-    def flush_events():
-        batch = events[:]
-        events.clear()
-        return batch
-    
-    def cleanup():
-        scheduler.cancel()
-        unmount()
-        if host.winfo_exists():
-            host.destroy()
+    lifecycle = rtk.component_lifecycle(host, render, parent_container, state, process_message)
     
     try:
-        update()  # Initial render
-        parent_msg = yield flush_events()
+        lifecycle['update']()  # Initial render
+        parent_msg = yield lifecycle['flush_events']()
         
         while True:
             if parent_msg and isinstance(parent_msg, dict):
-                if "parent_tick" in parent_msg:
-                    state["parent_tick"] = parent_msg["parent_tick"]
-                    update()
-                if "show" in parent_msg and parent_msg["show"]:
-                    show()
-                if "hide" in parent_msg and parent_msg["hide"]:
-                    hide()
+                lifecycle['process_message'](parent_msg)
             
-            scheduler.flush()
-            parent_msg = yield flush_events()
-            scheduler.defer()
+            lifecycle['scheduler'].flush()
+            parent_msg = yield lifecycle['flush_events']()
+            lifecycle['scheduler'].defer()
     finally:
-        cleanup()
+        lifecycle['cleanup']()
 
 
 def ListView(parent_container):
-    """Standalone list view app that creates its own host"""
-    # Create own host
-    host = ttk.Frame(parent_container)
-    # Initially hidden - parent will show/hide as needed
+    """List view component using rtk framework"""
+    host = rtk.create_host(parent_container)  # No initial pack - controlled by show/hide
     
     state = {
         "items": [],
@@ -181,14 +154,14 @@ def ListView(parent_container):
         val = e.widget.get()
         if state["filter"] != val:
             state["filter"] = val
-            events.append({"type": "filter_changed", "filter": val})
-            scheduler.request("high")
+            lifecycle['events'].append({"type": "filter_changed", "filter": val})
+            lifecycle['scheduler'].request("high")
     
     def on_add():
         new_item = f"Item {len(state['items']) + 1} @t{state['parent_tick']}"
         state["items"] = state["items"] + [new_item]
-        events.append({"type": "item_added", "items": state["items"]})
-        scheduler.request("high")
+        lifecycle['events'].append({"type": "item_added", "items": state["items"]})
+        lifecycle['scheduler'].request("high")
     
     def render():
         mk = memo_key_from(["list", state["filter"], len(state["items"])])
@@ -217,47 +190,36 @@ def ListView(parent_container):
             state["visible"] = False
             host.pack_forget()
     
-    update, unmount = mount_vdom(host, render)
-    scheduler = Scheduler(update, parent_container.winfo_toplevel())
-    events = []
+    def process_message(msg, state, update, scheduler, events):
+        if "parent_tick" in msg:
+            state["parent_tick"] = msg["parent_tick"]
+            update()
+        if "show" in msg and msg["show"]:
+            show()
+        if "hide" in msg and msg["hide"]:
+            hide()
     
-    def flush_events():
-        batch = events[:]
-        events.clear()
-        return batch
-    
-    def cleanup():
-        scheduler.cancel()
-        unmount()
-        if host.winfo_exists():
-            host.destroy()
+    lifecycle = rtk.component_lifecycle(host, render, parent_container, state, process_message)
     
     try:
-        update()  # Initial render
-        parent_msg = yield flush_events()
+        lifecycle['update']()  # Initial render
+        parent_msg = yield lifecycle['flush_events']()
         
         while True:
             if parent_msg and isinstance(parent_msg, dict):
-                if "parent_tick" in parent_msg:
-                    state["parent_tick"] = parent_msg["parent_tick"]
-                    update()
-                if "show" in parent_msg and parent_msg["show"]:
-                    show()
-                if "hide" in parent_msg and parent_msg["hide"]:
-                    hide()
+                lifecycle['process_message'](parent_msg)
             
-            scheduler.flush()
-            parent_msg = yield flush_events()
-            scheduler.defer()
+            lifecycle['scheduler'].flush()
+            parent_msg = yield lifecycle['flush_events']()
+            lifecycle['scheduler'].defer()
     finally:
-        cleanup()
+        lifecycle['cleanup']()
 
 
 def StatusBar(parent_container, portal_host):
-    """Standalone status bar app using portal"""
-    # Create own host (dummy since we use portal)
-    host = ttk.Frame(parent_container)
-    host.pack_forget()  # Hidden dummy
+    """Status bar component using rtk framework"""
+    host = rtk.create_host(parent_container)  # Hidden dummy for portal
+    host.pack_forget()
     
     state = {
         "active": "counter",
@@ -278,56 +240,44 @@ def StatusBar(parent_container, portal_host):
         )
         return Portal(portal_host, status_content, key="status")
     
-    update, unmount = mount_vdom(host, render)
-    scheduler = Scheduler(update, parent_container.winfo_toplevel())
-    events = []
+    def process_message(msg, state, update, scheduler, events):
+        updated = False
+        if "active" in msg and state["active"] != msg["active"]:
+            state["active"] = msg["active"]
+            updated = True
+        if "parent_tick" in msg and state["parent_tick"] != msg["parent_tick"]:
+            state["parent_tick"] = msg["parent_tick"]
+            updated = True
+        if "counter_count" in msg and state["counter_count"] != msg["counter_count"]:
+            state["counter_count"] = msg["counter_count"]
+            updated = True
+        if "items_count" in msg and state["items_count"] != msg["items_count"]:
+            state["items_count"] = msg["items_count"]
+            updated = True
+        
+        if updated:
+            update()
     
-    def flush_events():
-        batch = events[:]
-        events.clear()
-        return batch
-    
-    def cleanup():
-        scheduler.cancel()
-        unmount()
-        if host.winfo_exists():
-            host.destroy()
+    lifecycle = rtk.component_lifecycle(host, render, parent_container, state, process_message)
     
     try:
-        update()  # Initial render
-        parent_msg = yield flush_events()
+        lifecycle['update']()  # Initial render
+        parent_msg = yield lifecycle['flush_events']()
         
         while True:
             if parent_msg and isinstance(parent_msg, dict):
-                updated = False
-                if "active" in parent_msg and state["active"] != parent_msg["active"]:
-                    state["active"] = parent_msg["active"]
-                    updated = True
-                if "parent_tick" in parent_msg and state["parent_tick"] != parent_msg["parent_tick"]:
-                    state["parent_tick"] = parent_msg["parent_tick"]
-                    updated = True
-                if "counter_count" in parent_msg and state["counter_count"] != parent_msg["counter_count"]:
-                    state["counter_count"] = parent_msg["counter_count"]
-                    updated = True
-                if "items_count" in parent_msg and state["items_count"] != parent_msg["items_count"]:
-                    state["items_count"] = parent_msg["items_count"]
-                    updated = True
-                
-                if updated:
-                    update()
+                lifecycle['process_message'](parent_msg)
             
-            scheduler.flush()
-            parent_msg = yield flush_events()
-            scheduler.defer()
+            lifecycle['scheduler'].flush()
+            parent_msg = yield lifecycle['flush_events']()
+            lifecycle['scheduler'].defer()
     finally:
-        cleanup()
+        lifecycle['cleanup']()
 
 
 def Header(parent_container):
-    """Standalone header app that creates its own host"""
-    # Create own host
-    host = ttk.Frame(parent_container)
-    host.pack(fill="x", pady=(0, 10))
+    """Header component using rtk framework"""
+    host = rtk.create_host(parent_container, {"fill": "x", "pady": (0, 10)})
     
     state = {
         "title": "App",
@@ -344,51 +294,41 @@ def Header(parent_container):
         )
         return h("h2", {"text": header_text})
     
-    update, unmount = mount_vdom(host, render)
-    scheduler = Scheduler(update, parent_container.winfo_toplevel())
-    events = []
+    def process_message(msg, state, update, scheduler, events):
+        updated = False
+        if "title" in msg and state["title"] != msg["title"]:
+            state["title"] = msg["title"]
+            updated = True
+        if "active" in msg and state["active"] != msg["active"]:
+            state["active"] = msg["active"]
+            updated = True
+        if "parent_tick" in msg and state["parent_tick"] != msg["parent_tick"]:
+            state["parent_tick"] = msg["parent_tick"]
+            updated = True
+        
+        if updated:
+            update()
     
-    def flush_events():
-        batch = events[:]
-        events.clear()
-        return batch
-    
-    def cleanup():
-        scheduler.cancel()
-        unmount()
-        if host.winfo_exists():
-            host.destroy()
+    lifecycle = rtk.component_lifecycle(host, render, parent_container, state, process_message)
     
     try:
-        update()  # Initial render
-        parent_msg = yield flush_events()
+        lifecycle['update']()  # Initial render
+        parent_msg = yield lifecycle['flush_events']()
         
         while True:
             if parent_msg and isinstance(parent_msg, dict):
-                updated = False
-                if "title" in parent_msg and state["title"] != parent_msg["title"]:
-                    state["title"] = parent_msg["title"]
-                    updated = True
-                if "active" in parent_msg and state["active"] != parent_msg["active"]:
-                    state["active"] = parent_msg["active"]
-                    updated = True
-                if "parent_tick" in parent_msg and state["parent_tick"] != parent_msg["parent_tick"]:
-                    state["parent_tick"] = parent_msg["parent_tick"]
-                    updated = True
-                
-                if updated:
-                    update()
+                lifecycle['process_message'](parent_msg)
             
-            scheduler.flush()
-            parent_msg = yield flush_events()
-            scheduler.defer()
+            lifecycle['scheduler'].flush()
+            parent_msg = yield lifecycle['flush_events']()
+            lifecycle['scheduler'].defer()
     finally:
-        cleanup()
+        lifecycle['cleanup']()
 
 
 def MultiViewWithPortal(args, host, portal_host):
-    """Main coordinator app - just coordinates child components"""
-    # Application state
+    """Main coordinator app using rtk framework"""
+    # Application state (user-defined)
     app_state = {
         "active": "counter",
         "parent_tick": 0,
@@ -397,87 +337,54 @@ def MultiViewWithPortal(args, host, portal_host):
         "items_count": 0,
     }
     
-    # Initialize child components - they create their own hosts
-    child_components = {}
+    # Initialize child components using rtk
+    components = {
+        "header": rtk.create_component(Header, host),
+        "tabs": rtk.create_component(TabNavigation, host),
+        "counter": rtk.create_component(CounterView, host),
+        "list": rtk.create_component(ListView, host),
+        "status": rtk.create_component(StatusBar, host, portal_host),
+    }
     
-    def init_component(name, component_factory, *extra_args):
-        args_list = [host] + list(extra_args)
-        component = component_factory(*args_list)
-        next(component)  # Initialize
-        child_components[name] = {
-            "instance": component,
-            "events": []
-        }
-        return component
-    
-    # Start all child components - they create their own containers
-    init_component("header", Header)
-    init_component("tabs", TabNavigation)
-    init_component("counter", CounterView)
-    init_component("list", ListView)
-    init_component("status", StatusBar, portal_host)
-    
-    def send_to_all_children(message):
-        """Send message to all child components and collect their events"""
-        all_events = []
-        for name, child_data in child_components.items():
-            try:
-                events = child_data["instance"].send(message)
-                if events:
-                    all_events.extend(events)
-            except StopIteration:
-                pass
-        return all_events
-    
-    def send_to_child(child_name, message):
-        """Send message to specific child component"""
-        if child_name in child_components:
-            try:
-                events = child_components[child_name]["instance"].send(message)
-                return events or []
-            except StopIteration:
-                pass
-        return []
-    
-    def show_view(view_name):
-        """Show/hide views by sending show/hide messages"""
-        if view_name == "counter":
-            send_to_child("counter", {"show": True})
-            send_to_child("list", {"hide": True})
-        else:
-            send_to_child("list", {"show": True})
-            send_to_child("counter", {"hide": True})
-    
-    def process_child_events(events):
-        """Process events from child components"""
-        app_events = []
-        
-        for event in events:
-            if event["type"] == "tab_changed":
-                if app_state["active"] != event["active"]:
-                    app_state["active"] = event["active"]
-                    show_view(app_state["active"])
-                    # Notify all children of the change
-                    send_to_all_children({"active": app_state["active"]})
-                    app_events.append({"type": "view_changed", "active": app_state["active"]})
+    # Event handlers (user-defined business logic)
+    def handle_tab_changed(event, app_state, components):
+        if app_state["active"] != event["active"]:
+            app_state["active"] = event["active"]
+            # Show/hide views using rtk
+            if app_state["active"] == "counter":
+                rtk.show_view(components["counter"])
+                rtk.hide_view(components["list"])
+            else:
+                rtk.show_view(components["list"])
+                rtk.hide_view(components["counter"])
             
-            elif event["type"] == "counter_changed":
-                app_state["counter_count"] = event["count"]
-                # Update status bar
-                send_to_child("status", {"counter_count": app_state["counter_count"]})
-                app_events.append(event)
-            
-            elif event["type"] == "item_added" or event["type"] == "filter_changed":
-                if event["type"] == "item_added":
-                    app_state["items_count"] = len(event["items"])
-                    # Update status bar
-                    send_to_child("status", {"items_count": app_state["items_count"]})
-                app_events.append(event)
-        
-        return app_events
+            # Notify all components of the change
+            rtk.send_to_all_components(components, {"active": app_state["active"]})
+            return {"type": "view_changed", "active": app_state["active"]}
     
-    # Initial setup
-    show_view(app_state["active"])
+    def handle_counter_changed(event, app_state, components):
+        app_state["counter_count"] = event["count"]
+        # Update status bar
+        rtk.send_to_component(components["status"], {"counter_count": app_state["counter_count"]})
+        return event
+    
+    def handle_item_added(event, app_state, components):
+        app_state["items_count"] = len(event["items"])
+        # Update status bar
+        rtk.send_to_component(components["status"], {"items_count": app_state["items_count"]})
+        return event
+    
+    # Event handler mapping (user-defined)
+    event_handlers = {
+        "tab_changed": handle_tab_changed,
+        "counter_changed": handle_counter_changed,
+        "item_added": handle_item_added,
+        "filter_changed": lambda event, app_state, components: event,  # Pass through
+    }
+    
+    # Initial setup using rtk
+    rtk.show_view(components["counter"])
+    rtk.hide_view(components["list"])
     
     # Send initial state to all children
     initial_state = {
@@ -487,8 +394,8 @@ def MultiViewWithPortal(args, host, portal_host):
         "counter_count": app_state["counter_count"],
         "items_count": app_state["items_count"],
     }
-    child_events = send_to_all_children(initial_state)
-    processed_events = process_child_events(child_events)
+    child_events = rtk.send_to_all_components(components, initial_state)
+    processed_events = rtk.process_standard_events(child_events, app_state, components, event_handlers)
     
     try:
         parent_msg = yield processed_events
@@ -499,24 +406,21 @@ def MultiViewWithPortal(args, host, portal_host):
             if parent_msg and isinstance(parent_msg, dict):
                 if "tick" in parent_msg:
                     app_state["parent_tick"] = parent_msg["tick"]
-                    # Send tick to all children
-                    child_events = send_to_all_children({"parent_tick": app_state["parent_tick"]})
-                    all_events.extend(process_child_events(child_events))
+                    # Send tick to all children using rtk
+                    child_events = rtk.send_to_all_components(components, {"parent_tick": app_state["parent_tick"]})
+                    all_events.extend(rtk.process_standard_events(child_events, app_state, components, event_handlers))
                     
                     # Update status bar with new tick
-                    send_to_child("status", {"parent_tick": app_state["parent_tick"]})
+                    rtk.send_to_component(components["status"], {"parent_tick": app_state["parent_tick"]})
                 
                 elif parent_msg.get("type") == "immediate":
-                    # Collect any pending events from children
-                    child_events = send_to_all_children({})
-                    all_events.extend(process_child_events(child_events))
+                    # Collect any pending events from children using rtk
+                    child_events = rtk.send_to_all_components(components, {})
+                    all_events.extend(rtk.process_standard_events(child_events, app_state, components, event_handlers))
             
             parent_msg = yield all_events
     
     finally:
-        # Clean up all child components (they handle their own host destruction)
-        for child_data in child_components.values():
-            try:
-                child_data["instance"].close()
-            except Exception:
-                pass
+        # Clean up all child components using rtk
+        for component in components.values():
+            rtk.cleanup_component(component)
