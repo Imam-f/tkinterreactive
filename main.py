@@ -29,7 +29,7 @@ def main():
 
     tick = 0
     fps = 144
-    # fps = 10
+    fps = 10
     # fps = 1
 
     global pump
