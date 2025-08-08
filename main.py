@@ -28,9 +28,9 @@ def main():
     app = run_component(gen)
 
     tick = 0
-    fps = 144
-    fps = 10
-    # fps = 1
+    # fps = 144
+    # fps = 10
+    fps = 1
 
     global pump
     def pump():

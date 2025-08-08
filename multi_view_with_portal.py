@@ -1,7 +1,7 @@
 # multi_view_with_portal.py - With conditional component rendering
 
 import rtk
-from vdom import h, Portal, Component, ComponentVNode
+from vdom import h, Portal, Component
 from memo import create_memo, memo_key_from
 
 
@@ -30,7 +30,7 @@ def TabNavigation(parent_container):
     def process_message(msg, state, update, scheduler, events):
         if "active" in msg and state["active"] != msg["active"]:
             state["active"] = msg["active"]
-            update()
+            scheduler.request()
 
     lifecycle = rtk.component_lifecycle(parent_container, render, parent_container, state, process_message)
 
@@ -40,9 +40,7 @@ def TabNavigation(parent_container):
         while True:
             if parent_msg and isinstance(parent_msg, dict):
                 lifecycle['process_message'](parent_msg)
-            lifecycle['scheduler'].flush()
             parent_msg = yield lifecycle['flush_events']()
-            lifecycle['scheduler'].defer()
     finally:
         lifecycle['cleanup']()
 
@@ -84,7 +82,7 @@ def CounterView(parent_container):
             updated = True
         
         if updated:
-            update()
+            scheduler.request()
 
     lifecycle = rtk.component_lifecycle(parent_container, render, parent_container, state, process_message)
 
@@ -94,9 +92,7 @@ def CounterView(parent_container):
         while True:
             if parent_msg and isinstance(parent_msg, dict):
                 lifecycle['process_message'](parent_msg)
-            lifecycle['scheduler'].flush()
             parent_msg = yield lifecycle['flush_events']()
-            lifecycle['scheduler'].defer()
     finally:
         lifecycle['cleanup']()
 
@@ -154,7 +150,7 @@ def ListView(parent_container):
             updated = True
         
         if updated:
-            update()
+            scheduler.request()
 
     lifecycle = rtk.component_lifecycle(parent_container, render, parent_container, state, process_message)
 
@@ -164,9 +160,7 @@ def ListView(parent_container):
         while True:
             if parent_msg and isinstance(parent_msg, dict):
                 lifecycle['process_message'](parent_msg)
-            lifecycle['scheduler'].flush()
             parent_msg = yield lifecycle['flush_events']()
-            lifecycle['scheduler'].defer()
     finally:
         lifecycle['cleanup']()
 
@@ -206,7 +200,7 @@ def StatusBar(parent_container, portal_host):
                 updated = True
         
         if updated:
-            update()
+            scheduler.request()
 
     lifecycle = rtk.component_lifecycle(host, render, parent_container, state, process_message)
 
@@ -223,16 +217,14 @@ def StatusBar(parent_container, portal_host):
                 if event.get("type") == "counter_changed":
                     if state["counter_count"] != event["count"]:
                         state["counter_count"] = event["count"]
-                        lifecycle['update']()
+                        lifecycle['scheduler'].request()
                 elif event.get("type") == "item_added":
                     new_count = len(event["items"])
                     if state["items_count"] != new_count:
                         state["items_count"] = new_count
-                        lifecycle['update']()
+                        lifecycle['scheduler'].request()
             
-            lifecycle['scheduler'].flush()
             parent_msg = yield events
-            lifecycle['scheduler'].defer()
     finally:
         lifecycle['cleanup']()
 
@@ -264,7 +256,7 @@ def Header(parent_container):
                 state[k] = msg[k]
                 updated = True
         if updated:
-            update()
+            scheduler.request()
 
     lifecycle = rtk.component_lifecycle(parent_container, render, parent_container, state, process_message)
 
@@ -274,18 +266,16 @@ def Header(parent_container):
         while True:
             if parent_msg and isinstance(parent_msg, dict):
                 lifecycle['process_message'](parent_msg)
-            lifecycle['scheduler'].flush()
             parent_msg = yield lifecycle['flush_events']()
-            lifecycle['scheduler'].defer()
     finally:
         lifecycle['cleanup']()
 
 
 # -------------------------
-# Main Coordinator - With conditional component rendering
+# Main Coordinator - With automatic component detection
 # -------------------------
 def MultiViewWithPortal(args, host, portal_host):
-    """Main coordinator - conditionally renders components based on active state"""
+    """Main coordinator - automatically detects and manages components"""
     
     state = {
         "active": "counter",
@@ -294,7 +284,6 @@ def MultiViewWithPortal(args, host, portal_host):
     }
     
     components = {}
-    components_initialized = False
 
     def render():
         """Conditionally render components based on active state"""
@@ -311,59 +300,12 @@ def MultiViewWithPortal(args, host, portal_host):
             Component(lambda parent: StatusBar(parent, portal_host), key="status"),
         ])
 
-    def init_components_if_needed():
-        nonlocal components_initialized
-        if components_initialized:
-            return
-        
-        def find_component_containers(widget):
-            containers = []
-            for child in widget.winfo_children():
-                vnode = getattr(child, '_vnode', None)
-                if isinstance(vnode, ComponentVNode):
-                    containers.append(child)
-                containers.extend(find_component_containers(child))
-            return containers
-        
-        for container in find_component_containers(host):
-            vnode = getattr(container, '_vnode', None)
-            if vnode and vnode.key not in components:
-                factory = vnode.component_factory
-                if hasattr(vnode, 'extra_args') and vnode.extra_args:
-                    components[vnode.key] = rtk.create_component(factory, container, *vnode.extra_args)
-                else:
-                    components[vnode.key] = rtk.create_component(factory, container)
-        
-        components_initialized = True
-
     def handle_tab_changed(event):
         """Handle tab changes - update state and trigger re-render"""
         if state["active"] != event["active"]:
             state["active"] = event["active"]
-            # Clean up components that are no longer active
-            cleanup_inactive_components()
-            # Re-render to show/hide components
-            lifecycle['update']()
-            # Reset components_initialized to reinitialize new components
-            nonlocal components_initialized
-            components_initialized = False
             return True
         return False
-
-    def cleanup_inactive_components():
-        """Clean up components that are no longer being rendered"""
-        active_keys = set()
-        if state["active"] == "counter":
-            active_keys.add("counter")
-        elif state["active"] == "list":
-            active_keys.add("list")
-        # Always keep header, tabs, and status
-        active_keys.update(["header", "tabs", "status"])
-        
-        for key in list(components.keys()):
-            if key not in active_keys:
-                rtk.cleanup_component(components[key])
-                del components[key]
 
     def process_message(msg, state, update, scheduler, events):
         updated = False
@@ -372,7 +314,12 @@ def MultiViewWithPortal(args, host, portal_host):
             state["parent_tick"] = msg["tick"]
             updated = True
         
-        init_components_if_needed()
+        # Auto-initialize any uninitialized components
+        # This is safe to call multiple times
+        new_components_found = rtk.init_components_from_host(host, components)
+        if new_components_found and components:
+            rtk.send_to_all_components(components, state)
+        
         if components:
             child_events = rtk.send_to_all_components(components, {})
             for event in child_events:
@@ -380,17 +327,25 @@ def MultiViewWithPortal(args, host, portal_host):
                     if handle_tab_changed(event):
                         updated = True
                 events.append(event)
-        
+            
         if updated and components:
+            # Clean up components that are no longer active
+            active_keys = {
+                "header", "tabs", "status",
+                state["active"]  # Only keep the currently active view
+            }
+            rtk.cleanup_components_by_keys(components, active_keys)
+            
             rtk.send_to_all_components(components, state)
-            update()
+            scheduler.request()
 
     lifecycle = rtk.component_lifecycle(host, render, host, state, process_message)
 
     try:
         lifecycle['update']()
-        init_components_if_needed()
         
+        # Initial component initialization after first render
+        rtk.init_components_from_host(host, components)
         if components:
             rtk.send_to_all_components(components, state)
         
