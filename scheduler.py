@@ -19,12 +19,12 @@ class Scheduler:
         Args:
             priority: "high" for immediate response, "low" for batched updates
         """
-        if self.deferred:
-            # In deferred mode, don't schedule anything
-            return
-        
         if priority == "high":
             self._request_high_priority()
+            return
+        
+        if self.deferred:
+            # In deferred mode, don't schedule anything
             return
         
         self._request_low_priority()
@@ -61,7 +61,13 @@ class Scheduler:
 
     def request_immediate(self):
         """Convenience method for high priority requests"""
-        self.request("high")
+        # self.request("high")
+        global pump
+        import sys
+
+        pump = sys.modules["__main__"].pump
+        app = pump.__closure__[0].cell_contents
+        app.send({"type": "immediate"})
 
     def request_batched(self):
         """Convenience method for low priority requests"""
