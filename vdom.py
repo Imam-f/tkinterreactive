@@ -1,4 +1,5 @@
-# vdom.py - Refactored with better host detection and component awareness
+# vdom.py - Updated to handle None components
+
 import tkinter as tk
 from tkinter import ttk
 from weakref import WeakKeyDictionary
@@ -15,7 +16,8 @@ class ElementVNode:
     def __init__(self, tag, props=None, children=None, key=None, memo_key=None):
         self.tag = tag
         self.props = props or {}
-        self.children = children or []
+        # Filter out None children
+        self.children = [c for c in (children or []) if c is not None]
         self.key = key
         self.memo_key = memo_key
 
@@ -34,7 +36,6 @@ class ComponentVNode:
         self.component_factory = component_factory
         self.key = key
         self.extra_args = extra_args or []
-        # This will be populated by create_element with the container it creates
         self._container_host: ttk.Frame | None = None
 
 
@@ -45,6 +46,10 @@ def h(tag, props=None, children=None, key=None, memo_key=None):
         children = [children]
     elif children is None:
         children = []
+    
+    # Filter out None values from children
+    children = [c for c in children if c is not None]
+    
     return ElementVNode(tag, props or {}, children, key, memo_key)
 
 
@@ -100,6 +105,10 @@ def is_real_widget(host):
 
 
 def create_element(vnode, parent):
+    # Skip None values
+    if vnode is None:
+        return None
+        
     if isinstance(vnode, str):
         lbl = ttk.Label(parent, text=vnode)
         lbl.pack()
@@ -120,14 +129,10 @@ def create_element(vnode, parent):
         return anchor
 
     if isinstance(vnode, ComponentVNode):
-        # Create a container for the component. The component itself will be
-        # initialized by the parent and will render into this container.
         container = ttk.Frame(parent)
         container.pack(fill="both", expand=True)
         setattr(container, "_vnode", vnode)
-        # Mark this widget as a managed component boundary
         setattr(container, "_component_managed", True)
-        # Store the created container back on the vnode for the parent to find
         vnode._container_host = container
         return container
 
@@ -148,16 +153,22 @@ def create_element(vnode, parent):
 
     if isinstance(w, tk.Listbox):
         for c in vnode.children:
-            text = c if isinstance(c, str) else getattr(c, "text", str(c))
-            w.insert(tk.END, text)
+            if c is not None:
+                text = c if isinstance(c, str) else getattr(c, "text", str(c))
+                w.insert(tk.END, text)
     else:
         for c in vnode.children:
-            create_element(c, w)
+            if c is not None:
+                create_element(c, w)
 
     return w
 
 
 def same_node(a, b):
+    # Handle None values
+    if a is None or b is None:
+        return a is b
+        
     if type(a) is not type(b):
         return False
     if isinstance(a, str):
@@ -166,7 +177,6 @@ def same_node(a, b):
         return True
     if isinstance(a, PortalVNode):
         return a.key is not None and a.key == b.key
-    # Components are the same if their key is the same
     if isinstance(a, ComponentVNode):
         return a.key is not None and a.key == b.key
     if hasattr(a, "key") and hasattr(b, "key"):
@@ -178,6 +188,10 @@ def same_node(a, b):
 
 
 def nodes_equal(a, b):
+    # Handle None values
+    if a is None or b is None:
+        return a is b
+        
     if type(a) is not type(b):
         return False
 
@@ -195,8 +209,6 @@ def nodes_equal(a, b):
         )
 
     if isinstance(a, ComponentVNode):
-        # Equality is based on key and factory. If these are the same,
-        # we assume the component can handle its own updates.
         return a.key == b.key and a.component_factory == b.component_factory
 
     if isinstance(a, ElementVNode):
@@ -221,7 +233,7 @@ def nodes_equal(a, b):
 
 
 def find_widget_for_vnode(parent, vnode, index=None):
-    if not parent or not hasattr(parent, "winfo_children"):
+    if not parent or not hasattr(parent, "winfo_children") or vnode is None:
         return None
 
     children = parent.winfo_children()
@@ -244,7 +256,7 @@ def find_widget_for_vnode(parent, vnode, index=None):
 
 
 def patch_widget(widget, old_vnode, new_vnode):
-    if not widget or not widget.winfo_exists():
+    if not widget or not widget.winfo_exists() or new_vnode is None:
         return False
 
     setattr(widget, "_vnode", new_vnode)
@@ -265,9 +277,6 @@ def patch_widget(widget, old_vnode, new_vnode):
         return True
 
     if isinstance(new_vnode, ComponentVNode):
-        # The container widget itself doesn't need patching. The component
-        # inside it manages its own updates. We just need to ensure the
-        # vnode reference is updated.
         new_vnode._container_host = widget
         return True
 
@@ -287,6 +296,7 @@ def patch_widget(widget, old_vnode, new_vnode):
                     else c if isinstance(c, str) else str(c)
                 )
                 for c in getattr(old_vnode, "children", [])
+                if c is not None
             ]
             new_items = [
                 (
@@ -295,6 +305,7 @@ def patch_widget(widget, old_vnode, new_vnode):
                     else c if isinstance(c, str) else str(c)
                 )
                 for c in new_vnode.children
+                if c is not None
             ]
 
             if old_items != new_items:
@@ -317,6 +328,10 @@ def patch_children(parent_widget, old_children, new_children):
     if not parent_widget or not parent_widget.winfo_exists():
         return
 
+    # Filter out None values
+    old_children = [c for c in old_children if c is not None]
+    new_children = [c for c in new_children if c is not None]
+
     current_widgets = parent_widget.winfo_children()
 
     if len(old_children) == len(new_children):
@@ -333,14 +348,13 @@ def patch_children(parent_widget, old_children, new_children):
                         patch_recursive(parent_widget, old_child, new_child, i)
             return
 
-    # For simplicity in this context, destroy and recreate children.
-    # A more advanced implementation would use key-based reconciliation.
     for widget in current_widgets:
         if widget.winfo_exists():
             widget.destroy()
 
     for child_vnode in new_children:
-        create_element(child_vnode, parent_widget)
+        if child_vnode is not None:
+            create_element(child_vnode, parent_widget)
 
 
 def patch_recursive(parent, old_vnode, new_vnode, index=0):
@@ -350,6 +364,10 @@ def patch_recursive(parent, old_vnode, new_vnode, index=0):
     if not parent.winfo_exists():
         return new_vnode
 
+    # Handle None values
+    if new_vnode is None and old_vnode is None:
+        return None
+        
     if nodes_equal(old_vnode, new_vnode):
         return new_vnode
 
@@ -423,7 +441,8 @@ class ComponentMount:
         else:
             if isinstance(self.host, list):
                 self.host.clear()
-                self.host.append(new_vnode)
+                if new_vnode is not None:
+                    self.host.append(new_vnode)
                 self.old_vnode = new_vnode
 
     def unmount(self):
