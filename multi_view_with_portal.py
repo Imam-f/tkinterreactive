@@ -1,4 +1,4 @@
-# multi_view_with_portal.py - Final version with corrected main component
+# multi_view_with_portal.py - Corrected with proper event pooling
 
 import rtk
 from vdom import h, Portal, Component, ComponentVNode
@@ -6,7 +6,7 @@ from memo import create_memo, memo_key_from
 
 
 # -------------------------
-# Tab Navigation Component
+# Tab Navigation Component (unchanged)
 # -------------------------
 def TabNavigation(parent_container):
     """Tab navigation component using VDOM-provided container"""
@@ -48,7 +48,7 @@ def TabNavigation(parent_container):
 
 
 # -------------------------
-# Counter View Component
+# Counter View Component (unchanged)
 # -------------------------
 def CounterView(parent_container):
     """Counter component using VDOM-provided container"""
@@ -100,7 +100,7 @@ def CounterView(parent_container):
 
 
 # -------------------------
-# List View Component
+# List View Component (unchanged)
 # -------------------------
 def ListView(parent_container):
     """List view component using VDOM-provided container"""
@@ -168,10 +168,10 @@ def ListView(parent_container):
 
 
 # -------------------------
-# Status Bar Component
+# Status Bar Component - Now listens to sibling events directly
 # -------------------------
 def StatusBar(parent_container, portal_host):
-    """Status bar component using hidden host for portal"""
+    """Status bar component - listens to sibling events"""
     host = rtk.create_host(parent_container)
     host.pack_forget()
 
@@ -195,10 +195,13 @@ def StatusBar(parent_container, portal_host):
 
     def process_message(msg, state, update, scheduler, events):
         updated = False
-        for k in ("active", "parent_tick", "counter_count", "items_count"):
-            if k in msg and state[k] != msg[k]:
+        
+        # Handle parent state updates (only parent's own state)
+        for k in ("active", "parent_tick", "title"):
+            if k in msg and state.get(k) != msg.get(k):
                 state[k] = msg[k]
                 updated = True
+        
         if updated:
             update()
 
@@ -207,18 +210,33 @@ def StatusBar(parent_container, portal_host):
     try:
         lifecycle['update']()
         parent_msg = yield lifecycle['flush_events']()
+        
         while True:
             if parent_msg and isinstance(parent_msg, dict):
                 lifecycle['process_message'](parent_msg)
+            
+            # Listen for sibling events directly
+            events = lifecycle['flush_events']()
+            for event in events:
+                if event.get("type") == "counter_changed":
+                    if state["counter_count"] != event["count"]:
+                        state["counter_count"] = event["count"]
+                        lifecycle['update']()
+                elif event.get("type") == "item_added":
+                    new_count = len(event["items"])
+                    if state["items_count"] != new_count:
+                        state["items_count"] = new_count
+                        lifecycle['update']()
+            
             lifecycle['scheduler'].flush()
-            parent_msg = yield lifecycle['flush_events']()
+            parent_msg = yield events  # Pass events up to parent
             lifecycle['scheduler'].defer()
     finally:
         lifecycle['cleanup']()
 
 
 # -------------------------
-# Header Component
+# Header Component (unchanged)
 # -------------------------
 def Header(parent_container):
     """Header component using VDOM-provided container"""
@@ -240,7 +258,7 @@ def Header(parent_container):
     def process_message(msg, state, update, scheduler, events):
         updated = False
         for k in ("title", "active", "parent_tick"):
-            if k in msg and state[k] != msg[k]:
+            if k in msg and state.get(k) != msg.get(k):
                 state[k] = msg[k]
                 updated = True
         if updated:
@@ -262,30 +280,28 @@ def Header(parent_container):
 
 
 # -------------------------
-# Main Coordinator - Using rtk.component_lifecycle
+# Main Coordinator - Fixed event pooling
 # -------------------------
 def MultiViewWithPortal(args, host, portal_host):
-    """Main coordinator app using rtk.component_lifecycle"""
+    """Main coordinator - properly pools children events"""
     
-    # Application state
     state = {
         "active": "counter",
         "parent_tick": 0,
         "title": args["title"],
     }
     
-    # Child components storage
     components = {}
     components_initialized = False
 
     def render():
+        """Fixed render function - no None values"""
         views_children = []
         if state["active"] == "counter":
             views_children.append(Component(CounterView, key="counter"))
         elif state["active"] == "list":
             views_children.append(Component(ListView, key="list"))
         
-        print(state["active"])
         return h("div", {"class": "app"}, [
             Component(Header, key="header"),
             Component(TabNavigation, key="tabs"),
@@ -294,13 +310,11 @@ def MultiViewWithPortal(args, host, portal_host):
         ])
 
     def init_components_if_needed():
-        """Initialize child components after first render creates their containers"""
         nonlocal components_initialized
         if components_initialized:
             return
         
         def find_component_containers(widget):
-            """Recursively find all ComponentVNode containers"""
             containers = []
             for child in widget.winfo_children():
                 vnode = getattr(child, '_vnode', None)
@@ -321,50 +335,45 @@ def MultiViewWithPortal(args, host, portal_host):
         components_initialized = True
 
     def handle_tab_changed(event):
+        """Handle tab changes - affects parent's render"""
         if state["active"] != event["active"]:
             state["active"] = event["active"]
-            lifecycle['update']()  # Re-render for view switching
+            lifecycle['update']()
             return True
         return False
 
     def process_message(msg, state, update, scheduler, events):
-        """Process messages from parent"""
+        """Process external messages and collect child events"""
         updated = False
         
+        # Handle external messages
         if "tick" in msg:
             state["parent_tick"] = msg["tick"]
             updated = True
         
-        if msg.get("type") == "immediate":
-            # Initialize components after first render if not done
-            init_components_if_needed()
-            
-            # Collect events from children
-            if components:
-                child_events = rtk.send_to_all_components(components, {})
-                for event in child_events:
-                    if event.get("type") == "tab_changed":
-                        if handle_tab_changed(event):
-                            updated = True
-                    events.append(event)
+        # Always collect events from children (not just on "immediate")
+        init_components_if_needed()
+        if components:
+            child_events = rtk.send_to_all_components(components, {})
+            for event in child_events:
+                if event.get("type") == "tab_changed":
+                    if handle_tab_changed(event):
+                        updated = True
+                # Pass all events up to parent's caller
+                events.append(event)
         
-        if updated:
-            # Send updated state to all children
-            if components:
-                rtk.send_to_all_components(components, state)
+        # Send parent's state to children if updated
+        if updated and components:
+            rtk.send_to_all_components(components, state)
             update()
 
-    # Use rtk.component_lifecycle like other components
     lifecycle = rtk.component_lifecycle(host, render, host, state, process_message)
 
     try:
-        # Initial render
         lifecycle['update']()
-        
-        # Initialize components after first render
         init_components_if_needed()
         
-        # Send initial state to children
+        # Send initial parent state to children
         if components:
             rtk.send_to_all_components(components, state)
         
@@ -378,7 +387,6 @@ def MultiViewWithPortal(args, host, portal_host):
             parent_msg = yield lifecycle['flush_events']()
             lifecycle['scheduler'].defer()
     finally:
-        # Clean up all child components
         for component in components.values():
             rtk.cleanup_component(component)
         lifecycle['cleanup']()
