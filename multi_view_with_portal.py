@@ -51,10 +51,11 @@ def TabNavigation(parent_container):
 # Counter View Component (unchanged)
 # -------------------------
 def CounterView(parent_container):
-    """Counter component using VDOM-provided container"""
+    """Counter component - handles its own visibility"""
     state = {
         "count": 0,
-        "parent_tick": 0
+        "parent_tick": 0,
+        "visible": False
     }
 
     def on_inc():
@@ -67,6 +68,16 @@ def CounterView(parent_container):
         lifecycle['events'].append({"type": "counter_changed", "count": state["count"]})
         lifecycle['scheduler'].request("high")
 
+    def show():
+        if not state["visible"]:
+            state["visible"] = True
+            parent_container.pack(fill="both", expand=True)
+
+    def hide():
+        if state["visible"]:
+            state["visible"] = False
+            parent_container.pack_forget()
+
     def render():
         mk = memo_key_from(["counter", state["parent_tick"], state["count"]])
         return h("div", {"class": "view counter"}, [
@@ -78,13 +89,25 @@ def CounterView(parent_container):
 
     def process_message(msg, state, update, scheduler, events):
         updated = False
+        
         if "parent_tick" in msg and state["parent_tick"] != msg["parent_tick"]:
             state["parent_tick"] = msg["parent_tick"]
             updated = True
+        
+        # Handle visibility based on active state
+        if "active" in msg:
+            should_show = msg["active"] == "counter"
+            if should_show and not state["visible"]:
+                show()
+            elif not should_show and state["visible"]:
+                hide()
+        
         if updated:
             update()
 
     lifecycle = rtk.component_lifecycle(parent_container, render, parent_container, state, process_message)
+    # Initially hidden
+    parent_container.pack_forget()
 
     try:
         lifecycle['update']()
@@ -103,11 +126,12 @@ def CounterView(parent_container):
 # List View Component (unchanged)
 # -------------------------
 def ListView(parent_container):
-    """List view component using VDOM-provided container"""
+    """List view component - handles its own visibility"""
     state = {
         "items": [],
         "filter": "",
-        "parent_tick": 0
+        "parent_tick": 0,
+        "visible": False
     }
 
     memo_filtered = create_memo()
@@ -133,6 +157,16 @@ def ListView(parent_container):
         lifecycle['events'].append({"type": "item_added", "items": state["items"]})
         lifecycle['scheduler'].request("high")
 
+    def show():
+        if not state["visible"]:
+            state["visible"] = True
+            parent_container.pack(fill="both", expand=True)
+
+    def hide():
+        if state["visible"]:
+            state["visible"] = False
+            parent_container.pack_forget()
+
     def render():
         mk = memo_key_from(["list", state["filter"], len(state["items"])])
         filtered_items = get_filtered()
@@ -146,13 +180,25 @@ def ListView(parent_container):
 
     def process_message(msg, state, update, scheduler, events):
         updated = False
+        
         if "parent_tick" in msg and state["parent_tick"] != msg["parent_tick"]:
             state["parent_tick"] = msg["parent_tick"]
             updated = True
+        
+        # Handle visibility based on active state
+        if "active" in msg:
+            should_show = msg["active"] == "list"
+            if should_show and not state["visible"]:
+                show()
+            elif not should_show and state["visible"]:
+                hide()
+        
         if updated:
             update()
 
     lifecycle = rtk.component_lifecycle(parent_container, render, parent_container, state, process_message)
+    # Initially hidden
+    parent_container.pack_forget()
 
     try:
         lifecycle['update']()
@@ -283,7 +329,7 @@ def Header(parent_container):
 # Main Coordinator - Fixed event pooling
 # -------------------------
 def MultiViewWithPortal(args, host, portal_host):
-    """Main coordinator - properly pools children events"""
+    """Main coordinator - always render both views, control visibility"""
     
     state = {
         "active": "counter",
@@ -295,17 +341,14 @@ def MultiViewWithPortal(args, host, portal_host):
     components_initialized = False
 
     def render():
-        """Fixed render function - no None values"""
-        views_children = []
-        if state["active"] == "counter":
-            views_children.append(Component(CounterView, key="counter"))
-        elif state["active"] == "list":
-            views_children.append(Component(ListView, key="list"))
-        
+        """Always render both components - they handle their own visibility"""
         return h("div", {"class": "app"}, [
             Component(Header, key="header"),
             Component(TabNavigation, key="tabs"),
-            h("div", {"class": "views"}, views_children),
+            h("div", {"class": "views"}, [
+                Component(CounterView, key="counter"),
+                Component(ListView, key="list"),
+            ]),
             Component(lambda parent: StatusBar(parent, portal_host), key="status"),
         ])
 
@@ -335,23 +378,22 @@ def MultiViewWithPortal(args, host, portal_host):
         components_initialized = True
 
     def handle_tab_changed(event):
-        """Handle tab changes - affects parent's render"""
+        """Handle tab changes - update state and notify children"""
         if state["active"] != event["active"]:
             state["active"] = event["active"]
-            lifecycle['update']()
+            # Don't re-render parent - just update child visibility
+            if components:
+                rtk.send_to_all_components(components, state)
             return True
         return False
 
     def process_message(msg, state, update, scheduler, events):
-        """Process external messages and collect child events"""
         updated = False
         
-        # Handle external messages
         if "tick" in msg:
             state["parent_tick"] = msg["tick"]
             updated = True
         
-        # Always collect events from children (not just on "immediate")
         init_components_if_needed()
         if components:
             child_events = rtk.send_to_all_components(components, {})
@@ -359,13 +401,12 @@ def MultiViewWithPortal(args, host, portal_host):
                 if event.get("type") == "tab_changed":
                     if handle_tab_changed(event):
                         updated = True
-                # Pass all events up to parent's caller
                 events.append(event)
         
-        # Send parent's state to children if updated
         if updated and components:
             rtk.send_to_all_components(components, state)
-            update()
+            if "parent_tick" in msg:  # Only re-render on tick, not tab changes
+                update()
 
     lifecycle = rtk.component_lifecycle(host, render, host, state, process_message)
 
@@ -373,7 +414,6 @@ def MultiViewWithPortal(args, host, portal_host):
         lifecycle['update']()
         init_components_if_needed()
         
-        # Send initial parent state to children
         if components:
             rtk.send_to_all_components(components, state)
         
